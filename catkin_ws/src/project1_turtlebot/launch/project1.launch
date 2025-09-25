@@ -1,0 +1,13 @@
+<launch>
+  <arg name="world_file" default="$(find project1_turtlebot)/worlds/map.world"/>
+
+  <!-- NOTE(ss): Just stole this from the hw2 sample stuff, launches the map in gazebo -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world_file)"/>
+    <arg name="gui" value="true"/>
+    <arg name="debug" value="false"/>
+  </include>
+
+  <!-- TODO: Launch the other things presumably? -->
+
+</launch>

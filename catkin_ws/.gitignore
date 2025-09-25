@@ -1,0 +1,34 @@
+# Build artifacts
+build/
+devel/
+install/
+
+# Log files
+log/
+.ros/
+
+# Generated files
+*.pyc
+*.o
+*.so
+*.a
+*.lo
+*.la
+*.d
+*.cmake
+Makefile
+
+# Catkin specific
+catkin_generated/
+CATKIN_IGNORE
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*~
+# For CLion
+cmake-build-debug/
+
+# Other common exclusions
+.DS_Store
