@@ -49,6 +49,7 @@
   <!-- Use doc_depend for packages you need only for building documentation: -->
   <!--   <doc_depend>doxygen</doc_depend> -->
   <buildtool_depend>catkin</buildtool_depend>
+
   <build_depend>geometry_msgs</build_depend>
   <build_depend>roscpp</build_depend>
   <build_depend>rospy</build_depend>
@@ -66,13 +67,14 @@
   <exec_depend>std_msgs</exec_depend>
 
   <!-- NOTE: Added these, think we need them? -->
-  <build_depend>turtlebot</build_depend>
-  <exec_depend>turtlebot</exec_depend>
   <build_depend>turtlebot_simulator</build_depend>
-  <exec_depend>turtlebot_simulator</exec_depend>
+  <build_depend>turtlebot</build_depend>
   <build_depend>turtlebot_teleop</build_depend>
+  <build_depend>turtlebot_bringup</build_depend>
+  <exec_depend>turtlebot_simulator</exec_depend>
+  <exec_depend>turtlebot</exec_depend>
   <exec_depend>turtlebot_teleop</exec_depend>
-
+  <exec_depend>turtlebot_bringup</exec_depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>
