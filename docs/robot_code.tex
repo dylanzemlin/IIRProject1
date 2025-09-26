@@ -26,7 +26,7 @@ The implementation of subsumption can be found in a few different places
 \begin{itemize}
     \item \textbf{Behavior Priority List} In the main loop of the primary, a list of behaviors is checked in the order listed by the assignment. The first behavior that triggers a non-zero movement command (e.g. it has a velocity or rotates) takes control of that loop iteration and will prevent any further behaviors from triggering. For example the BumperBehavior prevents motion immediately if a collision is detected and prevents any further behaviors from running.
     \item \textbf{Object Oriented Behaviors:} Each behavior is represented as a class (BumperBehavior, EscapeBehavior, AvoidBehavior, RandomTurnBehavior, ForwardBehavior), inheriting from a base Behavior class. This design makes it incredibly simple to implement the chosen architecture as we can easily put a list of behaviors together that can be ran using the same line of code (behavior->run()).
-    \item \textbf{Sensor Data:} Each behavior has access to a context objet that contains the latest sensor reading and global state information such as whether or not the robot is escaping, etc.
+    \item \textbf{Sensor Data:} Each behavior has access to a context object that contains the latest sensor reading and global state information such as whether or not the robot is escaping, etc.
 \end{itemize}
 
 \section{Algorithms and Behaviors}
