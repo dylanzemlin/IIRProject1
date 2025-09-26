@@ -1,0 +1,24 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{float}
+
+\title{World and Launch Documentation}
+\author{Alexander Greus, Kenneth Thompson, Dylan Zemlin, Spencer Smith}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\part*{World File}
+This file specifies bunch of information about the map that we made for this project. Most importantly it specifies the model that we created to simulate the given assignment map specification. The model section lists all the walls that make it up, their positions/'poses' and their size. It also lists the collision separately from their visuals, which though its probably not as important for our model, since its relatively simple, it probably is important to separate visual and colliding geometry to optimize their representations for each. As well it also specifies the ground plane model. We initially ran into a humorous bug when we first tried running the turtle bot on our map: we had forgotten to put a ground plane and immediately the turtle bot began plummeting into infinity. For all the models in our world file there also parameters that we didn't really mess with, such as friction or visual material. As well, there are parameters for the world that seem very interesting but that we did not change, such as gravity or magnetic field. There are also parameters for physics, and rendering plugins.
+
+\part*{Launch File}
+
+\end{document}
