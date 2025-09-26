@@ -2,12 +2,20 @@
   <arg name="world_file" default="$(find project1_turtlebot)/worlds/map.world"/>
 
   <!-- We can just reuse the already provided launch for putting the bot in gazebo -->
-  <include file="$(find turtlebot_gazebo)/launch/turtlebot_world.launch">
-    <arg name="world_file" value="$(arg world_file)"/>
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world_file)"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui" value="true"/>
+    <arg name="headless" value="false"/>
+    <arg name="debug" value="false"/>
   </include>
 
   <!-- Mapping -->
   <include file="$(find turtlebot_gazebo)/launch/gmapping_demo.launch"></include>
+
+  <!-- Spawn Robot -->
+  <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model" args="-urdf -param robot_description -model turtlebot -x 0 -y 0 -z 0.5" respawn="false" output="screen" />
 
   <!-- Rvis -->
   <include file="$(find turtlebot_rviz_launchers)/launch/view_navigation.launch"></include>
