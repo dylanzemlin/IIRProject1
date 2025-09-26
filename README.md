@@ -1,9 +1,13 @@
-# TODO
+# TO RUN
+```bash
+roslaunch project1_turtlebot project1.launch
+```
+The teleop node is launched as well so you can use the controls from the same terminal you launch the project from.
+
+# COMPLETE
 - Document the following
     - The world and launch files, translating the xml into English (1.5 to 2 pages in length, roughly 80 characters per line, 50 lines per page)
     - The robot code, as well as why we used our particular reactive architecture, and how the code embodies that architecture (1.5 to 2 pages in length, roughly 80 characters per line, 50 lines per page)
-
-# COMPLETE
 - Accept keyboard movement commands from a human user.
 - Also needs mapping, but he lists it separately for whatever reason in the assignment page
 - Gazebo map world file
