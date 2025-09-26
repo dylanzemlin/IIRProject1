@@ -122,6 +122,14 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
+add_executable(project1_turtlebot src/project1_turtlebot.cpp)
+
+target_link_libraries(project1_turtlebot
+  ${catkin_LIBRARIES}
+)
+
+add_dependencies(project1_turtlebot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
 #   src/${PROJECT_NAME}/project1_turtlebot.cpp

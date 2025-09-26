@@ -15,5 +15,8 @@
   <!-- Teleop... Kind of makes the terminal ugly -->
   <include file="$(find turtlebot_teleop)/launch/keyboard_teleop.launch"></include>
 
+  <!-- TODO: Our Architecture -->
+  <node pkg="project1_turtlebot" type="project1_turtlebot" name="project1_turtlebot" output="screen"/>
+
   <!-- TODO: Launch the other things presumably? -->
 </launch>
