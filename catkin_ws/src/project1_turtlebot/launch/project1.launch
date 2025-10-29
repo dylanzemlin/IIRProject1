@@ -18,7 +18,7 @@
   </include>
 
   <!-- Mapping -->
-  <include file="$(find turtlebot_gazebo)/launch/gmapping_demo.launch"></include>
+  <!-- <include file="$(find turtlebot_gazebo)/launch/gmapping_demo.launch"></include> -->
 
   <!-- Spawn Robot -->
   <include file="$(find turtlebot_gazebo)/launch/includes/$(arg base).launch.xml">
@@ -32,7 +32,7 @@
   </node>
 
   <!-- Rvis -->
-  <include file="$(find turtlebot_rviz_launchers)/launch/view_navigation.launch"></include>
+  <!-- <include file="$(find turtlebot_rviz_launchers)/launch/view_navigation.launch"></include> -->
 
   <!-- Fake laser -->
   <node pkg="nodelet" type="nodelet" name="laserscan_nodelet_manager" args="manager"/>
