@@ -32,25 +32,16 @@ The implementation of subsumption can be found in a few different places
 \subsection{Data Structures}
 
 \subsubsection{Bot}
-The bot is our main data structure, which is just a class, with members including the Context, which as discussed before has sensor data and any other pieces of shared state, any required publishers and subscribers, as well as our priority list of behaviors and pending tasks. The behavior priority list and pending tasks are simply arrays of their respective element types, that being objects inheriting from the Behavior base class.
+The bot is our main data structure, which is just a class, with members including the Context, which as discussed before has sensor data and any other pieces of shared state, any required publishers and subscribers, as well as our priority list of behaviors and pending tasks. The behavior priority list and pending tasks are simply arrays of their respective element types, that being objects inheriting from the Behavior base class and std::string respectively.
 
 \section{Algorithms and Behaviors}
 
 The behaviors as listed below are in order from highest priority to lowest priority (e.g. bumper is highest).
 
-\subsection{Bumper Behavior}
-The bumper sensor detects direct collisions with obstacles. If activated, this behavior issues an immediate stop command and disables teleoperation.
+\subsection{Task Manager}
 
-\subsection{Escape Behavior}
-When the robot is blocked both left and right, it performs an escape routine that is implemented by selecting a random turn angle (using uniform sampling as per the instructions) to rotate approximately 180 degrees away from the obstacle. The escape behavior remains active until the robot completes its turn.
+\subsection{Navigator}
 
-\subsection{Avoidance Behavior}
-If an obstacle is detected on one side or directly in front, the avoidance algorithm determines an angular velocity to steer the robot away. This is done by comparing distances measured by the laser scanner on the left and right sides, then generating a turn speed.
-
-\subsection{Random Turn Behavior}
-To prevent the robot from becoming stuck in repetitive left/right movements the random turn behavior occasionally interrupts forward motion. After traveling a certain distance a random small adjustment which prevents the robot from getting stuck.
-
-\subsection{Forward Behavior}
-When no other behavior is triggered the robot defaults to forward motion.
+\subsection{Path Planner}
 
 \end{document}
