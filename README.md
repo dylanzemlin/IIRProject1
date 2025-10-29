@@ -2,7 +2,18 @@
 ```bash
 roslaunch project1_turtlebot project1.launch
 ```
-The teleop node is launched as well so you can use the controls from the same terminal you launch the project from.
+
+To run a path, we have a few example scripts:
+```bash
+./square.sh
+./notopt_square.sh
+
+# Which these scripts in turn just publish tasks to our topic like so:
+rostopic pub -1 /task_lines std_msgs/String "data: '((0, 0), (0, 6))'"
+sleep 0.5
+# Triggers execution
+rostopic pub -1 /task_lines std_msgs/String "data: ''"
+```
 
 # COMPLETE
 - Document the following
