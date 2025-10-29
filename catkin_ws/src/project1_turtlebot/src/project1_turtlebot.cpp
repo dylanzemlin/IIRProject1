@@ -18,6 +18,13 @@
 #include <tuple>
 #include <vector>
 
+/*
+    The following three data structures are used to store target points, waypoints, and tasks (which are just collections of points)
+    They are used for the path planning and path following algorithms
+    - PointFt: A point that is going to be used in the path planning step
+    - Waypoint: A point that is going to be followed at some point and has been path planned on
+    - Task: A starting point and ending point for a line as well as metadata about whether or not its been followed
+*/
 struct PointFt {
     double x{0.0}, y{0.0};
 };
@@ -33,7 +40,12 @@ struct Task {
     bool goal_done{false};
 };
 
-// shared state
+/*
+    Contains useful information for each behavior to run which includes things like
+    - plan_: A queue of points the robot is going to attempt to follow
+    - progress_last_dist_ (and similar): Variables used to track if the robot is actually making progress towards the waypoint or if its stuck
+    - tasks_: A list of current tasks the robot is following
+*/
 struct Context {
     ros::NodeHandle handle_{"~"};
 
@@ -56,6 +68,9 @@ struct Context {
     bool start_pose_set_{false};
 };
 
+/*
+    yawFrom: Converts from a nav_msgs Odometry message to a single double (yaw)
+*/
 static double yawFrom(const nav_msgs::Odometry& od) {
     tf::Quaternion q;
     tf::quaternionMsgToTF(od.pose.pose.orientation, q);
@@ -64,21 +79,35 @@ static double yawFrom(const nav_msgs::Odometry& od) {
     return y;
 }
 
+/*
+    normAngle: normalizes an angle between 0 and 2PI (subtracts down or adds up to it)
+*/
 static double normAngle(double a) {
     while (a > M_PI) a -= 2 * M_PI;
     while (a < -M_PI) a += 2 * M_PI;
     return a;
 }
 
+/*
+    dist: standard distance function, calculates the distance between two points
+*/
 static double dist(double x1, double y1, double x2, double y2) {
     const double dx = x2 - x1, dy = y2 - y1;
     return std::hypot(dx, dy);
 }
 
+/*
+    clamp: standard clamping function, clamps a value between a lower bound and upper bound
+*/
 static double clamp(double v, double lo, double hi) {
     return std::max(lo, std::min(hi, v));
 }
 
+/*
+    Behavior: A standard Behavior class that has a single run function, the run function
+        is run in order and returns true or false depending on whether or not
+        it made any updates to the robots state
+*/
 class Behavior {
    public:
     explicit Behavior(Context& ctx) : ctx_(ctx) {}
@@ -89,6 +118,10 @@ class Behavior {
     Context& ctx_;
 };
 
+/*
+    TaskManagerBehavior: Handles building a plan if the robot does not currently have any plans
+        will also reset variables like last progress made, etc. 
+*/
 class TaskManagerBehavior : public Behavior {
    public:
     explicit TaskManagerBehavior(Context& ctx) : Behavior(ctx) {}
@@ -112,6 +145,11 @@ class TaskManagerBehavior : public Behavior {
         return false;
     }
 
+    /*
+        createMostlyOptimalPath: as the name implies, creates a "mostly optimal path" by performing a very scuffed
+            waypoint solver which just constantly takes the next shortest waypoint over and over again
+            until it creates a "solved" path. Certainly not fully optimal, but mostly optimal enough  
+    */
     std::vector<Waypoint> createMostlyOptimalPath() {
         struct Node {
             int task_id;
@@ -168,6 +206,10 @@ class TaskManagerBehavior : public Behavior {
     }
 };
 
+/*
+    NavigatorBehavior: Handles getting the current plan and the next available waypoint and attempting to navigate to it.
+        That includes handling figuring out the desired yaw/speed, determing if there is any forward progress being made, etc.
+*/
 class NavigatorBehavior : public Behavior {
    public:
     explicit NavigatorBehavior(Context& ctx) : Behavior(ctx) {}
@@ -188,12 +230,14 @@ class NavigatorBehavior : public Behavior {
         const double desired_yaw = std::atan2(dy, dx);
         const double yaw_err = normAngle(desired_yaw - yaw);
 
+        // Check if we have many any forward progress
         ros::Time now = ros::Time::now();
         if (dist_now + 1e-3 < ctx_.progress_last_dist_) {
             ctx_.progress_last_dist_ = dist_now;
             ctx_.progress_last_improve_ = now;
         }
 
+        // If we have made it within 1ft of the target waypoint the robot has made it and we can move on
         if (dist_now <= 1 * 0.3048) {
             ROS_INFO_STREAM("[Monitor] Reached waypoint for task "
                             << target.task_id
@@ -201,17 +245,19 @@ class NavigatorBehavior : public Behavior {
                             << " at (" << target.x_m / 0.3048 << " ft, "
                             << target.y_m / 0.3048 << " ft)");
 
-            // mark task state
+            // mark task state as completed
             if (target.is_start) {
                 ctx_.tasks_[target.task_id].start_done = true;
             } else {
                 ctx_.tasks_[target.task_id].goal_done = true;
             }
 
+            // pop the front of the plan so we can move onto the next waypoint
             ctx_.plan_.pop_front();
             ctx_.progress_last_dist_ = std::numeric_limits<double>::infinity();
             ctx_.progress_last_improve_ = now;
 
+            // if the plan is empty we are done :)
             if (ctx_.plan_.empty()) {
                 ctx_.navigating_ = false;
                 ctx_.have_plan_ = false;
@@ -221,8 +267,12 @@ class NavigatorBehavior : public Behavior {
 
             return true;
         }
+
+        // check if we have many any progress, if not handle it
         if ((now - ctx_.progress_last_improve_).toSec() > 6) {
             ROS_WARN_STREAM("[Monitor] Stuck before reaching waypoint for task " << target.task_id << (target.is_start ? " (START)" : " (DEST)"));
+            
+            // if its a start node remove that entire task, otherwise just that node
             if (target.is_start) {
                 removeTaskDestinationFromPlan(target.task_id);
                 ctx_.plan_.pop_front();
@@ -235,6 +285,7 @@ class NavigatorBehavior : public Behavior {
             ctx_.progress_last_dist_ = std::numeric_limits<double>::infinity();
             ctx_.progress_last_improve_ = now;
 
+            // if the plan is empty, we are done :)
             if (ctx_.plan_.empty()) {
                 ctx_.navigating_ = false;
                 ctx_.have_plan_ = false;
@@ -261,6 +312,9 @@ class NavigatorBehavior : public Behavior {
     }
 
    private:
+    /*
+        removeTaskDestinationFromPlan: Given a task_id, remove that entire task from the current plan
+    */
     void removeTaskDestinationFromPlan(int task_id) {
         std::deque<Waypoint> new_plan;
         for (auto& w : ctx_.plan_) {
@@ -276,6 +330,10 @@ class NavigatorBehavior : public Behavior {
     }
 };
 
+/*
+    PathFollowerBehavior: Just simply runs the navigation behavior, was added just incase other functionality was added later on
+        before the navigation run portion
+*/
 class PathFollowerBehavior : public Behavior {
    public:
     explicit PathFollowerBehavior(Context& ctx) : Behavior(ctx), nav_(ctx) {}
