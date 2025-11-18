@@ -269,7 +269,6 @@ class MoveBaseBehavior : public Behavior
 
       const PointFt& p = ctx_.plan[ctx_.current_plan_index];
 
-      // Build goal
       move_base_msgs::MoveBaseGoal goal;
       goal.target_pose.header.frame_id = "map";
       goal.target_pose.header.stamp = ros::Time::now();
@@ -284,7 +283,6 @@ class MoveBaseBehavior : public Behavior
       ac_.waitForResult(); // blocking?
 
       auto state = ac_.getState();
-
       if (state == actionlib::SimpleClientGoalState::SUCCEEDED)
       {
         ROS_INFO("Reached waypoint %zu", ctx_.current_plan_index);
