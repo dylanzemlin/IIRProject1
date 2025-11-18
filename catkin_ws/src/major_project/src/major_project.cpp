@@ -40,6 +40,118 @@ struct Task {
     bool goal_done{false};
 };
 
+
+/*
+    dist: standard distance function, calculates the distance between two points
+*/
+static double dist(double x1, double y1, double x2, double y2) {
+    const double dx = x2 - x1, dy = y2 - y1;
+    return std::hypot(dx, dy);
+}
+
+/*
+   Returns the optimal path amongst passed in points according to christofides algo
+
+   Assumes the first point in the list is the origin
+*/
+
+static
+std::vector<PointFt> christofides_path(const std::vector<PointFt> &points)
+{
+  size_t points_count = points.size();
+
+  // Build a Min Spanning Tree for the points... Using prim's algo
+
+  // Metadata we need to keep track of for each point for algo
+  struct Point_Meta
+  {
+    bool   in_mst   = false;
+    double min_edge = std::numeric_limits<double>::infinity(); // Don't know it yet
+    size_t parent_index = 0; // Everyone starts connected to origin
+    size_t degree = 0;
+  };
+
+  std::vector<Point_Meta> metas(points_count);
+
+  metas[0].in_mst = true; // Origin is always in mst
+  for (size_t i = 1; i < points_count; i++)
+  {
+    // Remember: from the origin
+    metas[i].min_edge = dist(points[0].x, points[0].y, points[i].x, points[i].y);
+  }
+
+  // Just a helper struct
+  struct Edge
+  {
+    size_t index0 = 0;
+    size_t index1 = 0;
+  };
+
+  std::vector<Edge> mst_edges;
+  mst_edges.reserve(points_count - 1);
+
+  // Ok now we want to actually build the tree
+  for (size_t edge_count = 0; edge_count < points_count - 1; edge_count++)
+  {
+    // Pick the cheapest edge we haven't already added
+    double min_edge = std::numeric_limits<double>::infinity();
+    size_t add_idx = (size_t) -1; // overflow to max since size_t is unsigned...
+    for (size_t point_idx = 0; point_idx < points_count; point_idx++)
+    {
+      if (!metas[point_idx].in_mst && metas[point_idx].min_edge < min_edge)
+      {
+        min_edge = metas[point_idx].min_edge;
+        add_idx = point_idx;
+      }
+    }
+
+    assert(add_idx != (size_t)-1 && "Uh oh, not able to find an edge");
+
+    // Add this new cheapest edge
+    metas[add_idx].in_mst = true;
+    Edge edge = {metas[add_idx].parent_index, add_idx};
+    mst_edges.push_back(edge);
+
+    // And increment the degree for both points in this edge
+    metas[metas[add_idx].parent_index].degree++;
+    metas[add_idx].degree++;
+
+    // Now update everyone not in our tree with distances from the most recently added point of our MST
+    for (size_t point_idx = 0; point_idx < points_count; point_idx++)
+    {
+      if (!metas[point_idx].in_mst)
+      {
+        double new_dist = dist(points[add_idx].x, points[add_idx].y, points[point_idx].x, points[point_idx].y);
+        if (new_dist < metas[point_idx].min_edge)
+        {
+          metas[point_idx].min_edge = new_dist;
+          metas[point_idx].parent_index = add_idx;
+        }
+      }
+    }
+  }
+
+  for (auto &e : mst_edges)
+      std::cout << e.index0 << " -> " << e.index1 << "\n";
+
+  // Ok first step done... now find odd-degree points
+  std::vector<size_t> odd_indices;
+  odd_indices.reserve(points_count); // Just reserve as if every one might be odd degree
+  for (size_t point_idx = 0; point_idx < points_count; point_idx++)
+  {
+    if (metas[point_idx].degree % 2 == 1)
+    {
+      odd_indices.push_back(point_idx);
+    }
+  }
+
+  for (size_t i = 0; i < points_count; i++)
+      std::cout << "Point " << i << " degree: " << metas[i].degree << "\n";
+
+  // TODO: hook this up to real output
+  return std::vector<PointFt>();
+}
+
 /*
     Contains useful information for each behavior to run which includes things like
     - plan_: A queue of points the robot is going to attempt to follow
@@ -89,14 +201,6 @@ static double normAngle(double a) {
 }
 
 /*
-    dist: standard distance function, calculates the distance between two points
-*/
-static double dist(double x1, double y1, double x2, double y2) {
-    const double dx = x2 - x1, dy = y2 - y1;
-    return std::hypot(dx, dy);
-}
-
-/*
     clamp: standard clamping function, clamps a value between a lower bound and upper bound
 */
 static double clamp(double v, double lo, double hi) {
@@ -120,7 +224,7 @@ class Behavior {
 
 /*
     TaskManagerBehavior: Handles building a plan if the robot does not currently have any plans
-        will also reset variables like last progress made, etc. 
+        will also reset variables like last progress made, etc.
 */
 class TaskManagerBehavior : public Behavior {
    public:
@@ -148,7 +252,7 @@ class TaskManagerBehavior : public Behavior {
     /*
         createMostlyOptimalPath: as the name implies, creates a "mostly optimal path" by performing a very scuffed
             waypoint solver which just constantly takes the next shortest waypoint over and over again
-            until it creates a "solved" path. Certainly not fully optimal, but mostly optimal enough  
+            until it creates a "solved" path. Certainly not fully optimal, but mostly optimal enough
     */
     std::vector<Waypoint> createMostlyOptimalPath() {
         struct Node {
@@ -271,7 +375,7 @@ class NavigatorBehavior : public Behavior {
         // check if we have many any progress, if not handle it
         if ((now - ctx_.progress_last_improve_).toSec() > 6) {
             ROS_WARN_STREAM("[Monitor] Stuck before reaching waypoint for task " << target.task_id << (target.is_start ? " (START)" : " (DEST)"));
-            
+
             // if its a start node remove that entire task, otherwise just that node
             if (target.is_start) {
                 removeTaskDestinationFromPlan(target.task_id);
