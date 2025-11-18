@@ -281,7 +281,7 @@ class MoveBaseBehavior : public Behavior
                ctx_.current_plan_index, p.x, p.y);
 
       ac_.sendGoal(goal);
-      ac_.waitForResult();   // blocks until done or aborted
+      ac_.waitForResult(); // blocking?
 
       auto state = ac_.getState();
 
