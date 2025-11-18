@@ -1,5 +1,5 @@
 <launch>
-  <arg name="world_file" default="$(find project1_turtlebot)/worlds/map.world"/>
+  <arg name="world_file" default="$(find major_project)/worlds/map.world"/>
 
   <arg name="base"      value="$(optenv TURTLEBOT_BASE kobuki)"/> <!-- create, roomba -->
   <arg name="battery"   value="$(optenv TURTLEBOT_BATTERY /proc/acpi/battery/BAT0)"/>  <!-- /proc/acpi/battery/BAT0 -->
@@ -49,7 +49,7 @@
   <include file="$(find turtlebot_teleop)/launch/keyboard_teleop.launch"></include>
 
   <!-- TODO: Our Architecture -->
-  <node pkg="project1_turtlebot" type="project1_turtlebot" name="project1_turtlebot" output="screen">
+  <node pkg="major_project" type="major_project" name="major_project" output="screen">
         <param name="avoid_dist_m" value="0.75"/>
   </node>
 </launch>

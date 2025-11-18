@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(project1_turtlebot)
+project(major_project)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
@@ -106,7 +106,7 @@ find_package(catkin REQUIRED COMPONENTS
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
 #  INCLUDE_DIRS include
-#  LIBRARIES project1_turtlebot
+#  LIBRARIES major_project
 #  CATKIN_DEPENDS geometry_msgs roscpp rospy sensor_msgs std_msgs
 #  DEPENDS system_lib
 )
@@ -122,17 +122,17 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-add_executable(project1_turtlebot src/project1_turtlebot.cpp)
+add_executable(major_project src/major_project.cpp)
 
-target_link_libraries(project1_turtlebot
+target_link_libraries(major_project
   ${catkin_LIBRARIES}
 )
 
-add_dependencies(project1_turtlebot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(major_project ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
-#   src/${PROJECT_NAME}/project1_turtlebot.cpp
+#   src/${PROJECT_NAME}/major_project.cpp
 # )
 
 ## Add cmake target dependencies of the library
@@ -143,7 +143,7 @@ add_dependencies(project1_turtlebot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
-# add_executable(${PROJECT_NAME}_node src/project1_turtlebot_node.cpp)
+# add_executable(${PROJECT_NAME}_node src/major_project_node.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -207,7 +207,7 @@ add_dependencies(project1_turtlebot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin
 #############
 
 ## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_project1_turtlebot.cpp)
+# catkin_add_gtest(${PROJECT_NAME}-test test/test_major_project.cpp)
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()
