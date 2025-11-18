@@ -5,41 +5,23 @@
 #include <std_msgs/String.h>
 #include <tf/transform_datatypes.h>
 
+#include <actionlib/client/simple_action_client.h>
+#include <actionlib/client/terminal_state.h>
+#include <move_base_msgs/MoveBaseAction.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <deque>
 #include <limits>
-#include <memory>
-#include <random>
-#include <regex>
-#include <sstream>
 #include <string>
-#include <tuple>
 #include <vector>
+#include <stack>
+#include <cassert>
+#include <unordered_map>
 
-/*
-    The following three data structures are used to store target points, waypoints, and tasks (which are just collections of points)
-    They are used for the path planning and path following algorithms
-    - PointFt: A point that is going to be used in the path planning step
-    - Waypoint: A point that is going to be followed at some point and has been path planned on
-    - Task: A starting point and ending point for a line as well as metadata about whether or not its been followed
-*/
 struct PointFt {
     double x{0.0}, y{0.0};
 };
-struct Waypoint {
-    double x_m{0.0}, y_m{0.0};
-    int task_id{-1};
-    bool is_start{false};
-};
-struct Task {
-    PointFt start_ft;
-    PointFt goal_ft;
-    bool start_done{false};
-    bool goal_done{false};
-};
-
 
 /*
     dist: standard distance function, calculates the distance between two points
@@ -50,45 +32,44 @@ static double dist(double x1, double y1, double x2, double y2) {
 }
 
 /*
-   Returns the optimal path amongst passed in points according to christofides algo
+   Returns the optimal path amongst passed in points according to a custom 2-opt algo
+
+   First we construct an initial tour according to a MST with a link back to the start,
+   then we do a pass of 2-opt optimization
 
    Assumes the first point in the list is the origin
 */
-
 static
-std::vector<PointFt> christofides_path(const std::vector<PointFt> &points)
+std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
 {
   size_t points_count = points.size();
 
-  // Build a Min Spanning Tree for the points... Using prim's algo
+  //
+  // Build a Min Spanning Tree for the points, using prim's algo
+  // Use that to give us a good initial tour to then do 3-opt refinement
+  //
 
-  // Metadata we need to keep track of for each point for algo
-  struct Point_Meta
+  // Metadata we need to keep track of for each point for MST algo
+  struct MST_Point
   {
+    // For building MST
     bool   in_mst   = false;
     double min_edge = std::numeric_limits<double>::infinity(); // Don't know it yet
     size_t parent_index = 0; // Everyone starts connected to origin
-    size_t degree = 0;
+
+    // For traversing
+    std::vector <size_t> neighbor_indices; // For adjacency stuff when we make our initial route from mst
+    bool visited = false;
   };
 
-  std::vector<Point_Meta> metas(points_count);
+  std::vector<MST_Point> mst_points(points_count);
 
-  metas[0].in_mst = true; // Origin is always in mst
+  mst_points[0].in_mst = true; // Origin is always in mst
   for (size_t i = 1; i < points_count; i++)
   {
     // Remember: from the origin
-    metas[i].min_edge = dist(points[0].x, points[0].y, points[i].x, points[i].y);
+    mst_points[i].min_edge = dist(points[0].x, points[0].y, points[i].x, points[i].y);
   }
-
-  // Just a helper struct
-  struct Edge
-  {
-    size_t index0 = 0;
-    size_t index1 = 0;
-  };
-
-  std::vector<Edge> mst_edges;
-  mst_edges.reserve(points_count - 1);
 
   // Ok now we want to actually build the tree
   for (size_t edge_count = 0; edge_count < points_count - 1; edge_count++)
@@ -98,9 +79,9 @@ std::vector<PointFt> christofides_path(const std::vector<PointFt> &points)
     size_t add_idx = (size_t) -1; // overflow to max since size_t is unsigned...
     for (size_t point_idx = 0; point_idx < points_count; point_idx++)
     {
-      if (!metas[point_idx].in_mst && metas[point_idx].min_edge < min_edge)
+      if (!mst_points[point_idx].in_mst && mst_points[point_idx].min_edge < min_edge)
       {
-        min_edge = metas[point_idx].min_edge;
+        min_edge = mst_points[point_idx].min_edge;
         add_idx = point_idx;
       }
     }
@@ -108,447 +89,293 @@ std::vector<PointFt> christofides_path(const std::vector<PointFt> &points)
     assert(add_idx != (size_t)-1 && "Uh oh, not able to find an edge");
 
     // Add this new cheapest edge
-    metas[add_idx].in_mst = true;
-    Edge edge = {metas[add_idx].parent_index, add_idx};
-    mst_edges.push_back(edge);
+    mst_points[add_idx].in_mst = true;
 
-    // And increment the degree for both points in this edge
-    metas[metas[add_idx].parent_index].degree++;
-    metas[add_idx].degree++;
+    // And add adjacency info
+    size_t parent = mst_points[add_idx].parent_index;
+    mst_points[parent].neighbor_indices.push_back(add_idx);
+    mst_points[add_idx].neighbor_indices.push_back(parent);
 
     // Now update everyone not in our tree with distances from the most recently added point of our MST
     for (size_t point_idx = 0; point_idx < points_count; point_idx++)
     {
-      if (!metas[point_idx].in_mst)
+      if (!mst_points[point_idx].in_mst)
       {
         double new_dist = dist(points[add_idx].x, points[add_idx].y, points[point_idx].x, points[point_idx].y);
-        if (new_dist < metas[point_idx].min_edge)
+        if (new_dist < mst_points[point_idx].min_edge)
         {
-          metas[point_idx].min_edge = new_dist;
-          metas[point_idx].parent_index = add_idx;
+          mst_points[point_idx].min_edge = new_dist;
+          mst_points[point_idx].parent_index = add_idx;
         }
       }
     }
   }
 
-  for (auto &e : mst_edges)
-      std::cout << e.index0 << " -> " << e.index1 << "\n";
+  // Now we construct our initial tour from the MST, ie we traverse it with DFS
+  std::vector<size_t> tour; // Indices, as always
+  tour.reserve(points_count);
 
-  // Ok first step done... now find odd-degree points
-  std::vector<size_t> odd_indices;
-  odd_indices.reserve(points_count); // Just reserve as if every one might be odd degree
-  for (size_t point_idx = 0; point_idx < points_count; point_idx++)
+  std::stack<size_t> stack;
+  stack.push(0);
+  while (!stack.empty())
   {
-    if (metas[point_idx].degree % 2 == 1)
+    size_t current = stack.top();
+    stack.pop();
+
+    MST_Point *point = &mst_points[current];
+    if (point->visited)
     {
-      odd_indices.push_back(point_idx);
+      continue;
+    }
+
+    // Add it to tour
+    point->visited = true;
+    tour.push_back(current);
+
+    // Add children
+    for (size_t neighbor_index = point->neighbor_indices.size(); neighbor_index-- > 0;)
+    {
+      size_t neighbor = point->neighbor_indices[neighbor_index];
+
+      if (!mst_points[neighbor].visited)
+      {
+        stack.push(neighbor);
+      }
     }
   }
 
-  for (size_t i = 0; i < points_count; i++)
-      std::cout << "Point " << i << " degree: " << metas[i].degree << "\n";
+  // Add the origin to the end of tour... 2-opt will hopefully make this better in case that's a really bad choice
+  tour.push_back(0);
 
-  // TODO: hook this up to real output
-  return std::vector<PointFt>();
+  double tour_distance = 0.0;
+  for (size_t i = 0; i < tour.size() - 1; i++)
+  {
+    PointFt a = points[tour[i]];
+    PointFt b = points[tour[i + 1]];
+    tour_distance += dist(a.x, a.y, b.x, b.y);
+  }
+
+  // 2-Opt refinement: take 2 edges and see if swapping would improve the tour, keep doing this until we don't see any improvement
+
+  bool improved = true;
+  while (improved) {
+    improved = false;
+
+    for (size_t i = 0; i < points_count - 1; i++)
+    {
+      for (size_t j = i + 2; j < points_count && j != i; j++)
+      {
+        PointFt a = points[tour[i]];
+        PointFt b = points[tour[i + 1]];
+        PointFt c = points[tour[j]];
+        PointFt d = points[tour[(j + 1) % points_count]];
+
+        // Before and after swap
+        double before = dist(a.x, a.y, b.x, b.y) + dist(c.x, c.y, d.x, d.y);
+        double after  = dist(a.x, a.y, c.x, c.y) + dist(b.x, b.y, d.x, d.y);
+
+
+        // If we see improvement, do the swap, but we need to reverse the edges in between too, to make the tour make sense
+        if (after < before)
+        {
+          size_t left = i + 1, right = j;
+          while (left < right)
+          {
+            std::swap(tour[left], tour[right]);
+            left++;
+            right--;
+          }
+
+          improved = true;
+        }
+      }
+    }
+  }
+
+  tour_distance = 0.0;
+  for (size_t i = 0; i < tour.size() - 1; i++)
+  {
+    PointFt a = points[tour[i]];
+    PointFt b = points[tour[i + 1]];
+    tour_distance += dist(a.x, a.y, b.x, b.y);
+  }
+
+  // Yay! We are finished and grab the actual points from our optimized tour
+  std::vector<PointFt> result;
+  result.reserve(points_count);
+
+  for (size_t i = 0; i < tour.size(); i++)
+  {
+    result.push_back(points[tour[i]]);
+  }
+
+  return result;
 }
 
 /*
     Contains useful information for each behavior to run which includes things like
     - plan_: A queue of points the robot is going to attempt to follow
-    - progress_last_dist_ (and similar): Variables used to track if the robot is actually making progress towards the waypoint or if its stuck
-    - tasks_: A list of current tasks the robot is following
 */
-struct Context {
-    ros::NodeHandle handle_{"~"};
+struct Context
+{
+  ros::NodeHandle handle_{"~"};
 
-    nav_msgs::Odometry odom_;
-    bool have_odom_{false};
+  // Map landmark names to points
+  std::unordered_map<std::string, PointFt> landmark_table;
 
-    geometry_msgs::Twist current_command_;
-
-    // navigation and monitoring
-    std::deque<Waypoint> plan_;
-    bool navigating_{false};
-    double progress_last_dist_{std::numeric_limits<double>::infinity()};
-    ros::Time progress_last_improve_{0};
-
-    // tasks
-    std::vector<Task> tasks_;
-    bool have_plan_{false};
-
-    double start_x_m_{0.0}, start_y_m_{0.0}, start_yaw_{0.0};
-    bool start_pose_set_{false};
+  std::vector<PointFt> plan;
+  size_t current_plan_index; // Which point we are heading to
 };
-
-/*
-    yawFrom: Converts from a nav_msgs Odometry message to a single double (yaw)
-*/
-static double yawFrom(const nav_msgs::Odometry& od) {
-    tf::Quaternion q;
-    tf::quaternionMsgToTF(od.pose.pose.orientation, q);
-    double r, p, y;
-    tf::Matrix3x3(q).getRPY(r, p, y);
-    return y;
-}
-
-/*
-    normAngle: normalizes an angle between 0 and 2PI (subtracts down or adds up to it)
-*/
-static double normAngle(double a) {
-    while (a > M_PI) a -= 2 * M_PI;
-    while (a < -M_PI) a += 2 * M_PI;
-    return a;
-}
-
-/*
-    clamp: standard clamping function, clamps a value between a lower bound and upper bound
-*/
-static double clamp(double v, double lo, double hi) {
-    return std::max(lo, std::min(hi, v));
-}
 
 /*
     Behavior: A standard Behavior class that has a single run function, the run function
         is run in order and returns true or false depending on whether or not
         it made any updates to the robots state
 */
-class Behavior {
-   public:
+class Behavior
+{
+  public:
     explicit Behavior(Context& ctx) : ctx_(ctx) {}
     virtual ~Behavior() {}
     virtual bool run() = 0;
 
-   protected:
+  protected:
     Context& ctx_;
 };
 
-/*
-    TaskManagerBehavior: Handles building a plan if the robot does not currently have any plans
-        will also reset variables like last progress made, etc.
-*/
-class TaskManagerBehavior : public Behavior {
-   public:
-    explicit TaskManagerBehavior(Context& ctx) : Behavior(ctx) {}
+class MoveBaseBehavior : public Behavior
+{
+  public:
 
-    bool run() override {
-        if (!ctx_.have_plan_ && !ctx_.tasks_.empty() && ctx_.have_odom_) {
-            std::vector<Waypoint> ordered_points = createMostlyOptimalPath();
-            ctx_.plan_.clear();
+    // Oh, brother
+    using MoveBaseClient =
+      actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction>;
 
-            for (auto& w : ordered_points) {
-                ctx_.plan_.push_back(w);
-            }
-            ctx_.have_plan_ = true;
-            ctx_.navigating_ = !ctx_.plan_.empty();
-            ctx_.progress_last_dist_ = std::numeric_limits<double>::infinity();
-            ctx_.progress_last_improve_ = ros::Time::now();
+    explicit MoveBaseBehavior(Context& ctx)
+      : Behavior(ctx),
+      ac_("move_base", true)
+    {
+      ROS_INFO("Waiting for move_base...");
+      ac_.waitForServer();
+      ROS_INFO("Connected to move_base");
+    }
 
-            ROS_INFO_STREAM("[Planner] Built plan with " << ctx_.plan_.size() << " waypoints.");
-            return false;
-        }
+    bool run() override
+    {
+      if (ctx_.current_plan_index >= ctx_.plan.size())
+      {
         return false;
+      }
+
+      const PointFt& p = ctx_.plan[ctx_.current_plan_index];
+
+      // Build goal
+      move_base_msgs::MoveBaseGoal goal;
+      goal.target_pose.header.frame_id = "map";
+      goal.target_pose.header.stamp = ros::Time::now();
+      goal.target_pose.pose.position.x = p.x;
+      goal.target_pose.pose.position.y = p.y;
+      goal.target_pose.pose.orientation.w = 1.0;
+
+      ROS_INFO("Sending goal %zu (%.2f, %.2f)",
+               ctx_.current_plan_index, p.x, p.y);
+
+      ac_.sendGoal(goal);
+      ac_.waitForResult();   // blocks until done or aborted
+
+      auto state = ac_.getState();
+
+      if (state == actionlib::SimpleClientGoalState::SUCCEEDED)
+      {
+        ROS_INFO("Reached waypoint %zu", ctx_.current_plan_index);
+      }
+      else
+      {
+        ROS_WARN("Failed waypoint %zu: %s",
+                 ctx_.current_plan_index, state.toString().c_str());
+      }
+
+      ctx_.current_plan_index++;
+      return true;
     }
 
-    /*
-        createMostlyOptimalPath: as the name implies, creates a "mostly optimal path" by performing a very scuffed
-            waypoint solver which just constantly takes the next shortest waypoint over and over again
-            until it creates a "solved" path. Certainly not fully optimal, but mostly optimal enough
-    */
-    std::vector<Waypoint> createMostlyOptimalPath() {
-        struct Node {
-            int task_id;
-            bool is_start;
-            double x_m;
-            double y_m;
-        };
-        std::vector<Node> remaining;
-
-        for (size_t i = 0; i < ctx_.tasks_.size(); ++i) {
-            const auto& t = ctx_.tasks_[i];
-            remaining.push_back(Node{static_cast<int>(i), true, t.start_ft.x * 0.3048, t.start_ft.y * 0.3048});
-            remaining.push_back(Node{static_cast<int>(i), false, t.goal_ft.x * 0.3048, t.goal_ft.y * 0.3048});
-        }
-
-        std::vector<Waypoint> result;
-        std::vector<bool> start_done(ctx_.tasks_.size(), false);
-        std::vector<bool> goal_done(ctx_.tasks_.size(), false);
-
-        auto current_x = ctx_.have_odom_ ? ctx_.odom_.pose.pose.position.x : ctx_.start_x_m_;
-        auto current_y = ctx_.have_odom_ ? ctx_.odom_.pose.pose.position.y : ctx_.start_y_m_;
-        while (!remaining.empty()) {
-            double best_d = std::numeric_limits<double>::infinity();
-            int best_idx = -1;
-            for (int i = 0; i < static_cast<int>(remaining.size()); ++i) {
-                const auto& n = remaining[i];
-                if (!n.is_start && !start_done[n.task_id]) {
-                    continue;
-                }
-
-                double d = dist(current_x, current_y, n.x_m, n.y_m);
-                if (d < best_d) {
-                    best_d = d;
-                    best_idx = i;
-                }
-            }
-            if (best_idx < 0) {
-                break;
-            }
-
-            const auto chosen = remaining[best_idx];
-            remaining.erase(remaining.begin() + best_idx);
-            result.push_back(Waypoint{chosen.x_m, chosen.y_m, chosen.task_id, chosen.is_start});
-            if (chosen.is_start) {
-                start_done[chosen.task_id] = true;
-            } else {
-                goal_done[chosen.task_id] = true;
-            }
-
-            current_x = chosen.x_m;
-            current_y = chosen.y_m;
-        }
-        return result;
-    }
+  private:
+    MoveBaseClient ac_;
 };
 
-/*
-    NavigatorBehavior: Handles getting the current plan and the next available waypoint and attempting to navigate to it.
-        That includes handling figuring out the desired yaw/speed, determing if there is any forward progress being made, etc.
-*/
-class NavigatorBehavior : public Behavior {
-   public:
-    explicit NavigatorBehavior(Context& ctx) : Behavior(ctx) {}
+class Bot
+{
+  public:
+    Bot() : ctx_()
+    {
+      // Just dummy stuff for now...
+      ctx_.landmark_table =
+      {
+        {"A", {0, 0}},
+        {"B", {5, 1}},
+        {"C", {10, 0}},
+        {"D", {12, 4}},
+        {"E", {10, 8}},
+        {"F", {5, 10}},
+        {"G", {0, 8}},
+        {"H", {-2, 4}},
+        {"I", {3, 3}},
+        {"J", {7, 2}},
+        {"K", {8, 6}},
+        {"L", {6, 9}},
+        {"M", {2, 7}},
+        {"N", {4, 5}},
+        {"O", {6, 4}},
+        {"P", {1, 2}}
+      };
 
-    bool run() override {
-        if (!ctx_.have_plan_ || !ctx_.navigating_ || ctx_.plan_.empty() || !ctx_.have_odom_) {
-            return false;
+      // FIXME: Hard-coded.
+      std::vector<std::string> wish_tour_landmarks = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", };
+
+      // Grab the actual points
+      std::vector<PointFt> wish_tour_points;
+      wish_tour_points.reserve(wish_tour_landmarks.size());
+      for (auto& name : wish_tour_landmarks)
+      {
+        auto bucket = ctx_.landmark_table.find(name);
+        if (bucket != ctx_.landmark_table.end())
+        {
+          wish_tour_points.push_back(bucket->second);
         }
+      }
 
-        Waypoint& target = ctx_.plan_.front();
-        const double rx = ctx_.odom_.pose.pose.position.x;
-        const double ry = ctx_.odom_.pose.pose.position.y;
-        const double yaw = yawFrom(ctx_.odom_);
+      // Use cool algorithm for good path
+      ctx_.plan = two_opt_path(wish_tour_points);
+      ctx_.current_plan_index = 0;
 
-        const double dx = target.x_m - rx;
-        const double dy = target.y_m - ry;
-        const double dist_now = std::hypot(dx, dy);
-        const double desired_yaw = std::atan2(dy, dx);
-        const double yaw_err = normAngle(desired_yaw - yaw);
-
-        // Check if we have many any forward progress
-        ros::Time now = ros::Time::now();
-        if (dist_now + 1e-3 < ctx_.progress_last_dist_) {
-            ctx_.progress_last_dist_ = dist_now;
-            ctx_.progress_last_improve_ = now;
-        }
-
-        // If we have made it within 1ft of the target waypoint the robot has made it and we can move on
-        if (dist_now <= 1 * 0.3048) {
-            ROS_INFO_STREAM("[Monitor] Reached waypoint for task "
-                            << target.task_id
-                            << (target.is_start ? " (START)" : " (DEST)")
-                            << " at (" << target.x_m / 0.3048 << " ft, "
-                            << target.y_m / 0.3048 << " ft)");
-
-            // mark task state as completed
-            if (target.is_start) {
-                ctx_.tasks_[target.task_id].start_done = true;
-            } else {
-                ctx_.tasks_[target.task_id].goal_done = true;
-            }
-
-            // pop the front of the plan so we can move onto the next waypoint
-            ctx_.plan_.pop_front();
-            ctx_.progress_last_dist_ = std::numeric_limits<double>::infinity();
-            ctx_.progress_last_improve_ = now;
-
-            // if the plan is empty we are done :)
-            if (ctx_.plan_.empty()) {
-                ctx_.navigating_ = false;
-                ctx_.have_plan_ = false;
-                ctx_.tasks_.clear();
-                ROS_INFO("[Monitor] All waypoints complete. Ready for a new set of tasks.");
-            }
-
-            return true;
-        }
-
-        // check if we have many any progress, if not handle it
-        if ((now - ctx_.progress_last_improve_).toSec() > 6) {
-            ROS_WARN_STREAM("[Monitor] Stuck before reaching waypoint for task " << target.task_id << (target.is_start ? " (START)" : " (DEST)"));
-
-            // if its a start node remove that entire task, otherwise just that node
-            if (target.is_start) {
-                removeTaskDestinationFromPlan(target.task_id);
-                ctx_.plan_.pop_front();
-                ctx_.tasks_[target.task_id].start_done = true;
-            } else {
-                ctx_.plan_.pop_front();
-                ctx_.tasks_[target.task_id].goal_done = true;
-            }
-
-            ctx_.progress_last_dist_ = std::numeric_limits<double>::infinity();
-            ctx_.progress_last_improve_ = now;
-
-            // if the plan is empty, we are done :)
-            if (ctx_.plan_.empty()) {
-                ctx_.navigating_ = false;
-                ctx_.have_plan_ = false;
-                ctx_.tasks_.clear();
-                ROS_INFO("[Monitor] Plan exhausted after recovery. Ready for new tasks.");
-            }
-            return true;
-        }
-
-        double w_cmd = clamp(1.8 * yaw_err, -1.2, 1.2);
-        double v_cmd = 0.0;
-
-        if (std::fabs(yaw_err) > M_PI / 8.0) {
-            v_cmd = 0.0;
-        } else {
-            v_cmd = clamp(0.8 * dist_now, 0.0, 0.3);
-        }
-
-        geometry_msgs::Twist cmd;
-        cmd.linear.x = v_cmd;
-        cmd.angular.z = w_cmd;
-        ctx_.current_command_ = cmd;
-        return true;
+      behaviors_.push_back(std::make_unique<MoveBaseBehavior>(ctx_));
     }
 
-   private:
-    /*
-        removeTaskDestinationFromPlan: Given a task_id, remove that entire task from the current plan
-    */
-    void removeTaskDestinationFromPlan(int task_id) {
-        std::deque<Waypoint> new_plan;
-        for (auto& w : ctx_.plan_) {
-            if (w.task_id == task_id && !w.is_start) {
-                continue;
-            }
+    void spin()
+    {
+      ros::Rate rate(20.0);
+      while (ros::ok()) {
+        ros::spinOnce();
 
-            new_plan.push_back(w);
+        for (auto &b : behaviors_) {
+            b->run();
         }
-        ctx_.plan_.swap(new_plan);
-        ctx_.tasks_[task_id].goal_done = true;
-        ROS_INFO_STREAM("[Planner] Removed DEST of task " << task_id << " from plan due to start failure.");
-    }
-};
 
-/*
-    PathFollowerBehavior: Just simply runs the navigation behavior, was added just incase other functionality was added later on
-        before the navigation run portion
-*/
-class PathFollowerBehavior : public Behavior {
-   public:
-    explicit PathFollowerBehavior(Context& ctx) : Behavior(ctx), nav_(ctx) {}
-    bool run() override { return nav_.run(); }
-
-   private:
-    NavigatorBehavior nav_;
-};
-
-class Bot {
-   public:
-    Bot() : ctx_() {
-        pub_cmd_ = ctx_.handle_.advertise<geometry_msgs::Twist>("/mobile_base/commands/velocity", 10);
-        sub_odom_ = ctx_.handle_.subscribe("/odom", 1, &Bot::odomCallback, this);
-        sub_tasks_ = ctx_.handle_.subscribe("/task_lines", 10, &Bot::taskLineCallback, this);
-
-        behaviors_.emplace_back(new TaskManagerBehavior(ctx_));
-        behaviors_.emplace_back(new PathFollowerBehavior(ctx_));
-
-        ROS_INFO("[Init] Publish each line like '((2, 3), (9, 8))' to /task_lines. Send an empty line to start.");
+        rate.sleep();
+      }
     }
 
-    void spin() {
-        ros::Rate rate(20.0);
-        while (ros::ok()) {
-            ros::spinOnce();
-            ctx_.current_command_ = geometry_msgs::Twist();
-
-            for (auto& b : behaviors_) {
-                if (b->run()) {
-                    break;
-                }
-            }
-
-            pub_cmd_.publish(ctx_.current_command_);
-            rate.sleep();
-        }
-    }
-
-   private:
+  private:
     Context ctx_;
+
     ros::Publisher pub_cmd_;
-    ros::Subscriber sub_odom_, sub_tasks_;
+
     std::vector<std::unique_ptr<Behavior>> behaviors_;
-    std::vector<std::string> pending_task_lines_;
-
-    void odomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
-        ctx_.odom_ = *msg;
-        if (!ctx_.have_odom_) {
-            ctx_.have_odom_ = true;
-            if (!ctx_.start_pose_set_) {
-                ctx_.start_x_m_ = ctx_.odom_.pose.pose.position.x;
-                ctx_.start_y_m_ = ctx_.odom_.pose.pose.position.y;
-                ctx_.start_yaw_ = yawFrom(ctx_.odom_);
-                ctx_.start_pose_set_ = true;
-            }
-        }
-    }
-
-    void taskLineCallback(const std_msgs::String::ConstPtr& msg) {
-        const std::string line = trim(msg->data);
-        if (line.empty()) {
-            if (pending_task_lines_.empty()) {
-                return;
-            }
-            parsePendingTasks();
-            pending_task_lines_.clear();
-
-            if (!ctx_.navigating_) {
-                ctx_.have_plan_ = false;
-            }
-
-            return;
-        }
-        pending_task_lines_.push_back(line);
-    }
-
-    static std::string trim(const std::string& s) {
-        const auto wsfront = std::find_if_not(
-            s.begin(), s.end(), [](int c) { return std::isspace(c); });
-        const auto wsback = std::find_if_not(s.rbegin(), s.rend(), [](int c) {
-                                return std::isspace(c);
-                            }).base();
-        if (wsback <= wsfront) return std::string();
-        return std::string(wsfront, wsback);
-    }
-
-    void parsePendingTasks() {
-        // i love regex
-        std::regex rx(R"(\(\(\s*([\-+]?\d+(\.\d+)?)\s*,\s*([\-+]?\d+(\.\d+)?)\s*\)\s*,\s*\(\s*([\-+]?\d+(\.\d+)?)\s*,\s*([\-+]?\d+(\.\d+)?)\s*\)\s*\))");
-        int added = 0;
-        for (const auto& ln : pending_task_lines_) {
-            std::smatch m;
-            if (std::regex_search(ln, m, rx)) {
-                Task t;
-                t.start_ft.x = std::stod(m[1]);
-                t.start_ft.y = std::stod(m[3]);
-                t.goal_ft.x = std::stod(m[5]);
-                t.goal_ft.y = std::stod(m[7]);
-                ctx_.tasks_.push_back(t);
-                ++added;
-            }
-        }
-
-        ROS_INFO_STREAM("[Tasks] Parsed " << added << " tasks.");
-    }
 };
 
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "project2_turtlebot");
-    Bot bot;
-    bot.spin();
-    return 0;
+  ros::init(argc, argv, "major_project");
+  Bot bot;
+  bot.spin();
+  return 0;
 }
