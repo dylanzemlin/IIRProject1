@@ -308,12 +308,13 @@ class Bot
         {"M", {2, 7}},
         {"N", {4, 5}},
         {"O", {6, 4}},
-        {"P", {1, 2}}
+        {"P", {-1, 0}},
+        {"Q", {-1, 2}}
       };
 
       // FIXME: Hard-coded.
       // std::vector<std::string> wish_tour_landmarks = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", };
-      std::vector<std::string> wish_tour_landmarks = { "A", "P", };
+      std::vector<std::string> wish_tour_landmarks = { "A", "P", "Q"};
 
       // Grab the actual points
       std::vector<PointFt> wish_tour_points;
