@@ -39,6 +39,7 @@ static double dist(double x1, double y1, double x2, double y2) {
 
    Assumes the first point in the list is the origin
 */
+// TODO: factor in landmark priorities
 static
 std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
 {
@@ -147,14 +148,6 @@ std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
   // Add the origin to the end of tour... 2-opt will hopefully make this better in case that's a really bad choice
   tour.push_back(0);
 
-  double tour_distance = 0.0;
-  for (size_t i = 0; i < tour.size() - 1; i++)
-  {
-    PointFt a = points[tour[i]];
-    PointFt b = points[tour[i + 1]];
-    tour_distance += dist(a.x, a.y, b.x, b.y);
-  }
-
   // 2-Opt refinement: take 2 edges and see if swapping would improve the tour, keep doing this until we don't see any improvement
 
   bool improved = true;
@@ -174,7 +167,6 @@ std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
         double before = dist(a.x, a.y, b.x, b.y) + dist(c.x, c.y, d.x, d.y);
         double after  = dist(a.x, a.y, c.x, c.y) + dist(b.x, b.y, d.x, d.y);
 
-
         // If we see improvement, do the swap, but we need to reverse the edges in between too, to make the tour make sense
         if (after < before)
         {
@@ -190,14 +182,6 @@ std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
         }
       }
     }
-  }
-
-  tour_distance = 0.0;
-  for (size_t i = 0; i < tour.size() - 1; i++)
-  {
-    PointFt a = points[tour[i]];
-    PointFt b = points[tour[i + 1]];
-    tour_distance += dist(a.x, a.y, b.x, b.y);
   }
 
   // Yay! We are finished and grab the actual points from our optimized tour
@@ -328,7 +312,8 @@ class Bot
       };
 
       // FIXME: Hard-coded.
-      std::vector<std::string> wish_tour_landmarks = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", };
+      // std::vector<std::string> wish_tour_landmarks = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", };
+      std::vector<std::string> wish_tour_landmarks = { "A", "P", };
 
       // Grab the actual points
       std::vector<PointFt> wish_tour_points;
