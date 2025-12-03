@@ -177,7 +177,8 @@ std::vector<PointFt> two_opt_path(const std::vector<Landmark> &points)
   // 2-Opt refinement: take 2 edges and see if swapping would improve the tour, keep doing this until we don't see any improvement
 
   bool improved = true;
-  while (improved) {
+  while (improved)
+  {
     improved = false;
 
     for (size_t i = 0; i < points_count - 1; i++)
@@ -333,6 +334,7 @@ class Bot
       // Grab the actual points
       std::vector<Landmark> wish_tour_landmarks;
       wish_tour_landmarks.reserve(wish_tour_names.size());
+
       for (auto& name : wish_tour_names)
       {
         auto bucket = ctx_.landmark_table.find(name);
