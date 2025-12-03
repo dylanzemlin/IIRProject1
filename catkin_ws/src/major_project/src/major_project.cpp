@@ -23,12 +23,38 @@ struct PointFt {
     double x{0.0}, y{0.0};
 };
 
+struct Landmark
+{
+  PointFt location;
+  double  priority;
+};
+
 /*
     dist: standard distance function, calculates the distance between two points
 */
 static double dist(double x1, double y1, double x2, double y2) {
     const double dx = x2 - x1, dy = y2 - y1;
     return std::hypot(dx, dy);
+}
+
+static double landmark_weight(Landmark from, Landmark to)
+{
+  double distance = dist(from.location.x, from.location.y, to.location.x, to.location.y);
+
+  double factor = 0.2; // Tune this?
+  double priority_bias = factor * (from.priority + to.priority);
+
+  // Higher priority will negate some of the distance, allowing high priority landmarks
+  // To have lower 'weights'
+  double result = distance - priority_bias;
+
+  double min_weight = 0.0001;
+  if (result < min_weight)
+  {
+    result = min_weight;
+  }
+
+  return result;
 }
 
 /*
@@ -41,13 +67,13 @@ static double dist(double x1, double y1, double x2, double y2) {
 */
 // TODO: factor in landmark priorities
 static
-std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
+std::vector<PointFt> two_opt_path(const std::vector<Landmark> &points)
 {
   size_t points_count = points.size();
 
   //
   // Build a Min Spanning Tree for the points, using prim's algo
-  // Use that to give us a good initial tour to then do 3-opt refinement
+  // Use that to give us a good initial tour to then do 2-opt refinement
   //
 
   // Metadata we need to keep track of for each point for MST algo
@@ -69,7 +95,7 @@ std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
   for (size_t i = 1; i < points_count; i++)
   {
     // Remember: from the origin
-    mst_points[i].min_edge = dist(points[0].x, points[0].y, points[i].x, points[i].y);
+    mst_points[i].min_edge = landmark_weight(points[0], points[i]);
   }
 
   // Ok now we want to actually build the tree
@@ -97,12 +123,12 @@ std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
     mst_points[parent].neighbor_indices.push_back(add_idx);
     mst_points[add_idx].neighbor_indices.push_back(parent);
 
-    // Now update everyone not in our tree with distances from the most recently added point of our MST
+    // Now update everyone not in our tree with weights from the most recently added point of our MST
     for (size_t point_idx = 0; point_idx < points_count; point_idx++)
     {
       if (!mst_points[point_idx].in_mst)
       {
-        double new_dist = dist(points[add_idx].x, points[add_idx].y, points[point_idx].x, points[point_idx].y);
+        double new_dist = landmark_weight(points[add_idx], points[point_idx]);
         if (new_dist < mst_points[point_idx].min_edge)
         {
           mst_points[point_idx].min_edge = new_dist;
@@ -158,14 +184,14 @@ std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
     {
       for (size_t j = i + 2; j < points_count && j != i; j++)
       {
-        PointFt a = points[tour[i]];
-        PointFt b = points[tour[i + 1]];
-        PointFt c = points[tour[j]];
-        PointFt d = points[tour[(j + 1) % points_count]];
+        Landmark a = points[tour[i]];
+        Landmark b = points[tour[i + 1]];
+        Landmark c = points[tour[j]];
+        Landmark d = points[tour[(j + 1) % points_count]];
 
         // Before and after swap
-        double before = dist(a.x, a.y, b.x, b.y) + dist(c.x, c.y, d.x, d.y);
-        double after  = dist(a.x, a.y, c.x, c.y) + dist(b.x, b.y, d.x, d.y);
+        double before = landmark_weight(a, b) + landmark_weight(c, d);
+        double after  = landmark_weight(a, c) + landmark_weight(b, d);
 
         // If we see improvement, do the swap, but we need to reverse the edges in between too, to make the tour make sense
         if (after < before)
@@ -190,7 +216,7 @@ std::vector<PointFt> two_opt_path(const std::vector<PointFt> &points)
 
   for (size_t i = 0; i < tour.size(); i++)
   {
-    result.push_back(points[tour[i]]);
+    result.push_back(points[tour[i]].location);
   }
 
   return result;
@@ -205,7 +231,7 @@ struct Context
   ros::NodeHandle handle_{"~"};
 
   // Map landmark names to points
-  std::unordered_map<std::string, PointFt> landmark_table;
+  std::unordered_map<std::string, Landmark> landmark_table;
 
   std::vector<PointFt> plan;
   size_t current_plan_index; // Which point we are heading to
@@ -293,43 +319,31 @@ class Bot
       // Just dummy stuff for now...
       ctx_.landmark_table =
       {
-        {"A", {0, 0}},
-        {"B", {5, 1}},
-        {"C", {10, 0}},
-        {"D", {12, 4}},
-        {"E", {10, 8}},
-        {"F", {5, 10}},
-        {"G", {0, 8}},
-        {"H", {-2, 4}},
-        {"I", {3, 3}},
-        {"J", {7, 2}},
-        {"K", {8, 6}},
-        {"L", {6, 9}},
-        {"M", {2, 7}},
-        {"N", {4, 5}},
-        {"O", {6, 4}},
-        {"P", {-1, 0}},
-        {"Q", {-1, 2}}
+        {"A", {{0, 0}, 0.10}},
+        {"P", {{-1, 0}, 0.90}},
+        {"Q", {{-1, 2}, 0.05}},
+        {"X", {{1.50, -2.0}, 0.15}},
+        {"Z", {{1.50, -1.0}, 0.95}},
+        {"W", {{1.50, -2.25}, 0.15}},
       };
 
       // FIXME: Hard-coded.
-      // std::vector<std::string> wish_tour_landmarks = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", };
-      std::vector<std::string> wish_tour_landmarks = { "A", "P", "Q"};
+      std::vector<std::string> wish_tour_names = { "A", "W", "P", "Q", "X", "Z"};
 
       // Grab the actual points
-      std::vector<PointFt> wish_tour_points;
-      wish_tour_points.reserve(wish_tour_landmarks.size());
-      for (auto& name : wish_tour_landmarks)
+      std::vector<Landmark> wish_tour_landmarks;
+      wish_tour_landmarks.reserve(wish_tour_names.size());
+      for (auto& name : wish_tour_names)
       {
         auto bucket = ctx_.landmark_table.find(name);
         if (bucket != ctx_.landmark_table.end())
         {
-          wish_tour_points.push_back(bucket->second);
+          wish_tour_landmarks.push_back(bucket->second);
         }
       }
 
       // Use cool algorithm for good path
-      ctx_.plan = two_opt_path(wish_tour_points);
+      ctx_.plan = two_opt_path(wish_tour_landmarks);
       ctx_.current_plan_index = 0;
 
       behaviors_.push_back(std::make_unique<MoveBaseBehavior>(ctx_));
