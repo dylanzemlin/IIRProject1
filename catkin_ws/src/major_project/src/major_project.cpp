@@ -1,6 +1,7 @@
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
+#include <rosgraph_msgs/Log.h>
 #include <sensor_msgs/LaserScan.h>
 #include <std_msgs/String.h>
 #include <tf/transform_datatypes.h>
@@ -18,20 +19,17 @@
 #include <stack>
 #include <cassert>
 #include <unordered_map>
+#include <sstream>
 
 struct PointFt {
     double x{0.0}, y{0.0};
 };
 
-struct Landmark
-{
-  PointFt location;
-  double  priority;
+struct Landmark {
+    PointFt location;
+    double priority;
 };
 
-/*
-    dist: standard distance function, calculates the distance between two points
-*/
 static double dist(double x1, double y1, double x2, double y2) {
     const double dx = x2 - x1, dy = y2 - y1;
     return std::hypot(dx, dy);
@@ -39,343 +37,281 @@ static double dist(double x1, double y1, double x2, double y2) {
 
 static double landmark_weight(Landmark from, Landmark to)
 {
-  double distance = dist(from.location.x, from.location.y, to.location.x, to.location.y);
+    double distance = dist(from.location.x, from.location.y,
+                           to.location.x, to.location.y);
 
-  double factor = 0.2; // Tune this?
-  double priority_bias = factor * (from.priority + to.priority);
+    double factor = 0.2;
+    double priority_bias = factor * (from.priority + to.priority);
 
-  // Higher priority will negate some of the distance, allowing high priority landmarks
-  // To have lower 'weights'
-  double result = distance - priority_bias;
-
-  double min_weight = 0.0001;
-  if (result < min_weight)
-  {
-    result = min_weight;
-  }
-
-  return result;
+    double result = distance - priority_bias;
+    if (result < 0.0001) result = 0.0001;
+    return result;
 }
 
-/*
-   Returns the optimal path amongst passed in points according to a custom 2-opt algo
-
-   First we construct an initial tour according to a MST with a link back to the start,
-   then we do a pass of 2-opt optimization
-
-   Assumes the first point in the list is the origin
-*/
-// TODO: factor in landmark priorities
-static
-std::vector<PointFt> two_opt_path(const std::vector<Landmark> &points)
+static std::vector<PointFt> two_opt_path(const std::vector<Landmark> &points)
 {
-  size_t points_count = points.size();
+    const size_t points_count = points.size();
+    struct MST_Point {
+        bool in_mst = false;
+        double min_edge = std::numeric_limits<double>::infinity();
+        size_t parent_index = 0;
+        std::vector<size_t> neighbor_indices;
+        bool visited = false;
+    };
 
-  //
-  // Build a Min Spanning Tree for the points, using prim's algo
-  // Use that to give us a good initial tour to then do 2-opt refinement
-  //
+    std::vector<MST_Point> mst(points_count);
+    mst[0].in_mst = true;
 
-  // Metadata we need to keep track of for each point for MST algo
-  struct MST_Point
-  {
-    // For building MST
-    bool   in_mst   = false;
-    double min_edge = std::numeric_limits<double>::infinity(); // Don't know it yet
-    size_t parent_index = 0; // Everyone starts connected to origin
+    for (size_t i = 1; i < points_count; i++)
+        mst[i].min_edge = landmark_weight(points[0], points[i]);
 
-    // For traversing
-    std::vector <size_t> neighbor_indices; // For adjacency stuff when we make our initial route from mst
-    bool visited = false;
-  };
-
-  std::vector<MST_Point> mst_points(points_count);
-
-  mst_points[0].in_mst = true; // Origin is always in mst
-  for (size_t i = 1; i < points_count; i++)
-  {
-    // Remember: from the origin
-    mst_points[i].min_edge = landmark_weight(points[0], points[i]);
-  }
-
-  // Ok now we want to actually build the tree
-  for (size_t edge_count = 0; edge_count < points_count - 1; edge_count++)
-  {
-    // Pick the cheapest edge we haven't already added
-    double min_edge = std::numeric_limits<double>::infinity();
-    size_t add_idx = (size_t) -1; // overflow to max since size_t is unsigned...
-    for (size_t point_idx = 0; point_idx < points_count; point_idx++)
+    for (size_t edge = 0; edge < points_count - 1; edge++)
     {
-      if (!mst_points[point_idx].in_mst && mst_points[point_idx].min_edge < min_edge)
-      {
-        min_edge = mst_points[point_idx].min_edge;
-        add_idx = point_idx;
-      }
-    }
+        double min_edge = std::numeric_limits<double>::infinity();
+        size_t add_idx = (size_t)-1;
 
-    assert(add_idx != (size_t)-1 && "Uh oh, not able to find an edge");
-
-    // Add this new cheapest edge
-    mst_points[add_idx].in_mst = true;
-
-    // And add adjacency info
-    size_t parent = mst_points[add_idx].parent_index;
-    mst_points[parent].neighbor_indices.push_back(add_idx);
-    mst_points[add_idx].neighbor_indices.push_back(parent);
-
-    // Now update everyone not in our tree with weights from the most recently added point of our MST
-    for (size_t point_idx = 0; point_idx < points_count; point_idx++)
-    {
-      if (!mst_points[point_idx].in_mst)
-      {
-        double new_dist = landmark_weight(points[add_idx], points[point_idx]);
-        if (new_dist < mst_points[point_idx].min_edge)
+        for (size_t idx = 0; idx < points_count; idx++)
         {
-          mst_points[point_idx].min_edge = new_dist;
-          mst_points[point_idx].parent_index = add_idx;
+            if (!mst[idx].in_mst && mst[idx].min_edge < min_edge)
+            {
+                min_edge = mst[idx].min_edge;
+                add_idx = idx;
+            }
         }
-      }
-    }
-  }
 
-  // Now we construct our initial tour from the MST, ie we traverse it with DFS
-  std::vector<size_t> tour; // Indices, as always
-  tour.reserve(points_count);
+        mst[add_idx].in_mst = true;
+        size_t parent = mst[add_idx].parent_index;
 
-  std::stack<size_t> stack;
-  stack.push(0);
-  while (!stack.empty())
-  {
-    size_t current = stack.top();
-    stack.pop();
+        mst[parent].neighbor_indices.push_back(add_idx);
+        mst[add_idx].neighbor_indices.push_back(parent);
 
-    MST_Point *point = &mst_points[current];
-    if (point->visited)
-    {
-      continue;
-    }
-
-    // Add it to tour
-    point->visited = true;
-    tour.push_back(current);
-
-    // Add children
-    for (size_t neighbor_index = point->neighbor_indices.size(); neighbor_index-- > 0;)
-    {
-      size_t neighbor = point->neighbor_indices[neighbor_index];
-
-      if (!mst_points[neighbor].visited)
-      {
-        stack.push(neighbor);
-      }
-    }
-  }
-
-  // Add the origin to the end of tour... 2-opt will hopefully make this better in case that's a really bad choice
-  tour.push_back(0);
-
-  // 2-Opt refinement: take 2 edges and see if swapping would improve the tour, keep doing this until we don't see any improvement
-
-  bool improved = true;
-  while (improved)
-  {
-    improved = false;
-
-    for (size_t i = 0; i < points_count - 1; i++)
-    {
-      for (size_t j = i + 2; j < points_count && j != i; j++)
-      {
-        Landmark a = points[tour[i]];
-        Landmark b = points[tour[i + 1]];
-        Landmark c = points[tour[j]];
-        Landmark d = points[tour[(j + 1) % points_count]];
-
-        // Before and after swap
-        double before = landmark_weight(a, b) + landmark_weight(c, d);
-        double after  = landmark_weight(a, c) + landmark_weight(b, d);
-
-        // If we see improvement, do the swap, but we need to reverse the edges in between too, to make the tour make sense
-        if (after < before)
+        for (size_t idx = 0; idx < points_count; idx++)
         {
-          size_t left = i + 1, right = j;
-          while (left < right)
-          {
-            std::swap(tour[left], tour[right]);
-            left++;
-            right--;
-          }
-
-          improved = true;
+            if (!mst[idx].in_mst)
+            {
+                double d = landmark_weight(points[add_idx], points[idx]);
+                if (d < mst[idx].min_edge)
+                {
+                    mst[idx].min_edge = d;
+                    mst[idx].parent_index = add_idx;
+                }
+            }
         }
-      }
     }
-  }
 
-  // Yay! We are finished and grab the actual points from our optimized tour
-  std::vector<PointFt> result;
-  result.reserve(points_count);
+    std::vector<size_t> tour;
+    tour.reserve(points_count);
+    std::stack<size_t> stack;
+    stack.push(0);
 
-  for (size_t i = 0; i < tour.size(); i++)
-  {
-    result.push_back(points[tour[i]].location);
-  }
+    while (!stack.empty())
+    {
+        size_t current = stack.top();
+        stack.pop();
 
-  return result;
+        if (mst[current].visited)
+            continue;
+
+        mst[current].visited = true;
+        tour.push_back(current);
+
+        for (size_t n = mst[current].neighbor_indices.size(); n-- > 0;)
+        {
+            size_t idx = mst[current].neighbor_indices[n];
+            if (!mst[idx].visited)
+                stack.push(idx);
+        }
+    }
+
+    tour.push_back(0);
+
+    bool improved = true;
+    while (improved)
+    {
+        improved = false;
+        for (size_t i = 0; i < points_count - 1; i++)
+        {
+            for (size_t j = i + 2; j < points_count && j != i; j++)
+            {
+                Landmark a = points[tour[i]];
+                Landmark b = points[tour[i+1]];
+                Landmark c = points[tour[j]];
+                Landmark d = points[tour[(j+1) % points_count]];
+
+                double before = landmark_weight(a, b) + landmark_weight(c, d);
+                double after  = landmark_weight(a, c) + landmark_weight(b, d);
+
+                if (after < before)
+                {
+                    std::reverse(tour.begin() + i + 1, tour.begin() + j + 1);
+                    improved = true;
+                }
+            }
+        }
+    }
+
+    std::vector<PointFt> out;
+    out.reserve(points_count);
+    for (size_t i = 0; i < tour.size(); i++)
+        out.push_back(points[tour[i]].location);
+
+    return out;
 }
 
-/*
-    Contains useful information for each behavior to run which includes things like
-    - plan_: A queue of points the robot is going to attempt to follow
-*/
-struct Context
-{
-  ros::NodeHandle handle_{"~"};
+struct Context {
+    ros::NodeHandle nh;
+    ros::Subscriber tour_sub;
+    ros::Subscriber odom_sub;
+    ros::Subscriber log_sub;
 
-  // Map landmark names to points
-  std::unordered_map<std::string, Landmark> landmark_table;
+    std::unordered_map<std::string, Landmark> landmark_table;
 
-  std::vector<PointFt> plan;
-  size_t current_plan_index; // Which point we are heading to
+    std::vector<PointFt> plan;
+    size_t current_plan_index = 0;
+
+    double current_speed = 0.0;
+    std::string last_log;
 };
 
-/*
-    Behavior: A standard Behavior class that has a single run function, the run function
-        is run in order and returns true or false depending on whether or not
-        it made any updates to the robots state
-*/
-class Behavior
-{
-  public:
-    explicit Behavior(Context& ctx) : ctx_(ctx) {}
-    virtual ~Behavior() {}
+class Behavior {
+public:
+    explicit Behavior(Context& c) : ctx(c) {}
     virtual bool run() = 0;
-
-  protected:
-    Context& ctx_;
+protected:
+    Context& ctx;
 };
 
-class MoveBaseBehavior : public Behavior
-{
-  public:
+class MoveBaseBehavior : public Behavior {
+public:
+    using MoveBaseClient = actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction>;
 
-    // Oh, brother
-    using MoveBaseClient =
-      actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction>;
-
-    explicit MoveBaseBehavior(Context& ctx)
-      : Behavior(ctx),
-      ac_("move_base", true)
+    explicit MoveBaseBehavior(Context& c)
+        : Behavior(c), ac("move_base", true)
     {
-      ROS_INFO("Waiting for move_base...");
-      ac_.waitForServer();
-      ROS_INFO("Connected to move_base");
+        ROS_INFO("Waiting for move_base...");
+        ac.waitForServer();
+        ROS_INFO("Connected.");
     }
 
     bool run() override
     {
-      if (ctx_.current_plan_index >= ctx_.plan.size())
-      {
-        return false;
-      }
+        if (ctx.current_plan_index >= ctx.plan.size())
+            return false;
 
-      const PointFt& p = ctx_.plan[ctx_.current_plan_index];
+        const PointFt& p = ctx.plan[ctx.current_plan_index];
 
-      move_base_msgs::MoveBaseGoal goal;
-      goal.target_pose.header.frame_id = "map";
-      goal.target_pose.header.stamp = ros::Time::now();
-      goal.target_pose.pose.position.x = p.x;
-      goal.target_pose.pose.position.y = p.y;
-      goal.target_pose.pose.orientation.w = 1.0;
+        move_base_msgs::MoveBaseGoal goal;
+        goal.target_pose.header.frame_id = "map";
+        goal.target_pose.header.stamp = ros::Time::now();
+        goal.target_pose.pose.position.x = p.x;
+        goal.target_pose.pose.position.y = p.y;
+        goal.target_pose.pose.orientation.w = 1.0;
 
-      ROS_INFO("Sending goal %zu (%.2f, %.2f)",
-               ctx_.current_plan_index, p.x, p.y);
+        ROS_INFO("Sending goal %zu: (%.2f, %.2f)",
+            ctx.current_plan_index, p.x, p.y);
 
-      ac_.sendGoal(goal);
-      ac_.waitForResult(); // blocking?
+        ac.sendGoal(goal);
+        ac.waitForResult();
 
-      auto state = ac_.getState();
-      if (state == actionlib::SimpleClientGoalState::SUCCEEDED)
-      {
-        ROS_INFO("Reached waypoint %zu", ctx_.current_plan_index);
-      }
-      else
-      {
-        ROS_WARN("Failed waypoint %zu: %s",
-                 ctx_.current_plan_index, state.toString().c_str());
-      }
+        auto st = ac.getState();
+        if (st == actionlib::SimpleClientGoalState::SUCCEEDED)
+            ROS_INFO("Reached waypoint.");
+        else
+            ROS_WARN("Failed: %s", st.toString().c_str());
 
-      ctx_.current_plan_index++;
-      return true;
+        ctx.current_plan_index++;
+        return true;
     }
 
-  private:
-    MoveBaseClient ac_;
+private:
+    MoveBaseClient ac;
 };
 
-class Bot
-{
-  public:
-    Bot() : ctx_()
+class Bot {
+public:
+    Bot()
     {
-      // Just dummy stuff for now...
-      ctx_.landmark_table =
-      {
-        {"A", {{0, 0}, 0.10}},
-        {"P", {{-1, 0}, 0.90}},
-        {"Q", {{-1, 2}, 0.05}},
-        {"X", {{1.50, -2.0}, 0.15}},
-        {"Z", {{1.50, -1.0}, 0.95}},
-        {"W", {{1.50, -2.25}, 0.15}},
-      };
+        ctx.landmark_table = {
+            {"REPF", {{0, 0}, 0.10}},
+            {"Felgar", {{-1, 0}, 0.90}},
+            {"Devon", {{-1, 2}, 0.05}},
+            {"Carson", {{1.5, -2}, 0.15}},
+            {"Sarkeys", {{1.5, -1}, 0.95}},
+            {"TheUnion", {{1.5, -2.25}, 0.15}},
+        };
 
-      // FIXME: Hard-coded.
-      std::vector<std::string> wish_tour_names = { "A", "W", "P", "Q", "X", "Z"};
+        ctx.tour_sub = ctx.nh.subscribe("/tour_start", 1, &Bot::tourCallback, this);
+        ctx.odom_sub = ctx.nh.subscribe("/odom", 1, &Bot::odomCallback, this);
+        ctx.log_sub  = ctx.nh.subscribe("/rosout_agg", 100, &Bot::logCallback, this);
 
-      // Grab the actual points
-      std::vector<Landmark> wish_tour_landmarks;
-      wish_tour_landmarks.reserve(wish_tour_names.size());
+        behaviors.push_back(std::make_unique<MoveBaseBehavior>(ctx));
+    }
 
-      for (auto& name : wish_tour_names)
-      {
-        auto bucket = ctx_.landmark_table.find(name);
-        if (bucket != ctx_.landmark_table.end())
-        {
-          wish_tour_landmarks.push_back(bucket->second);
+    void tourCallback(const std_msgs::String::ConstPtr& msg)
+    {
+        ROS_INFO("UI Requested Tour: %s", msg->data.c_str());
+
+        std::stringstream ss(msg->data);
+        std::string name;
+        std::vector<Landmark> selected;
+
+        while (std::getline(ss, name, ',')) {
+            name.erase(remove_if(name.begin(), name.end(), ::isspace), name.end());
+            if (name == "The Union") name = "TheUnion";
+
+            auto it = ctx.landmark_table.find(name);
+            if (it != ctx.landmark_table.end())
+                selected.push_back(it->second);
+            else
+                ROS_WARN("Unknown landmark: %s", name.c_str());
         }
-      }
 
-      // Use cool algorithm for good path
-      ctx_.plan = two_opt_path(wish_tour_landmarks);
-      ctx_.current_plan_index = 0;
+        if (selected.empty()) {
+            ROS_WARN("Empty selection.");
+            return;
+        }
 
-      behaviors_.push_back(std::make_unique<MoveBaseBehavior>(ctx_));
+        ctx.plan = two_opt_path(selected);
+        ctx.current_plan_index = 0;
+
+        ROS_INFO("Tour rebuilt with %lu points.", ctx.plan.size());
+    }
+
+    void odomCallback(const nav_msgs::Odometry::ConstPtr& msg)
+    {
+        double vx = msg->twist.twist.linear.x;
+        double vy = msg->twist.twist.linear.y;
+        ctx.current_speed = std::sqrt(vx*vx + vy*vy);
+    }
+
+    void logCallback(const rosgraph_msgs::Log::ConstPtr& msg)
+    {
+        ctx.last_log = msg->msg;
     }
 
     void spin()
     {
-      ros::Rate rate(20.0);
-      while (ros::ok()) {
-        ros::spinOnce();
+        ros::Rate rate(20);
+        while (ros::ok())
+        {
+            ros::spinOnce();
 
-        for (auto &b : behaviors_) {
-            b->run();
+            for (auto& b : behaviors)
+                b->run();
+
+            rate.sleep();
         }
-
-        rate.sleep();
-      }
     }
 
-  private:
-    Context ctx_;
-
-    ros::Publisher pub_cmd_;
-
-    std::vector<std::unique_ptr<Behavior>> behaviors_;
+private:
+    Context ctx;
+    std::vector<std::unique_ptr<Behavior>> behaviors;
 };
 
-int main(int argc, char** argv) {
-  ros::init(argc, argv, "major_project");
-  Bot bot;
-  bot.spin();
-  return 0;
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, "major_project");
+    Bot bot;
+    bot.spin();
+    return 0;
 }

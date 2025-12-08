@@ -1,0 +1,4 @@
+<launch>
+  <node pkg="major_project" type="interface.py" name="interface" output="screen">
+  </node>
+</launch>
