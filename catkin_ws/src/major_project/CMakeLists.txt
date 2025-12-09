@@ -8,6 +8,7 @@ project(major_project)
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   roscpp
+  roslib
   rospy
   sensor_msgs
   std_msgs
@@ -23,6 +24,7 @@ catkin_package(
   CATKIN_DEPENDS
     geometry_msgs
     roscpp
+    roslib
     rospy
     sensor_msgs
     std_msgs

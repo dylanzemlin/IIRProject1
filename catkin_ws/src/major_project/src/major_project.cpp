@@ -1,5 +1,7 @@
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
+#include <nav_msgs/Path.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <ros/ros.h>
 #include <rosgraph_msgs/Log.h>
 #include <sensor_msgs/LaserScan.h>
@@ -20,6 +22,8 @@
 #include <cassert>
 #include <unordered_map>
 #include <sstream>
+#include <fstream>
+#include <ros/package.h>
 
 struct PointFt {
     double x{0.0}, y{0.0};
@@ -158,11 +162,49 @@ static std::vector<PointFt> two_opt_path(const std::vector<Landmark> &points)
     return out;
 }
 
+static std::unordered_map<std::string, Landmark> load_waypoint_file(const std::string& path)
+{
+    std::unordered_map<std::string, Landmark> table;
+
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        ROS_ERROR("Failed to open waypoint file: %s", path.c_str());
+        return table;
+    }
+
+    std::string line;
+    while (std::getline(file, line))
+    {
+        if (line.empty()) continue;
+
+        // Expected: Name: x, y
+        std::stringstream ss(line);
+        std::string name, coords;
+
+        if (!std::getline(ss, name, ':')) continue;
+        if (!std::getline(ss, coords))     continue;
+
+        double x, y;
+        if (sscanf(coords.c_str(), " %lf , %lf", &x, &y) == 2)
+        {
+            Landmark lm;
+            lm.location = {x, y};
+            lm.priority = 0.0;
+            table[name] = lm;
+        }
+    }
+
+    ROS_INFO("Loaded %lu waypoints from file.", table.size());
+    return table;
+}
+
 struct Context {
     ros::NodeHandle nh;
     ros::Subscriber tour_sub;
     ros::Subscriber odom_sub;
     ros::Subscriber log_sub;
+
+    ros::Publisher plan_pub;
 
     std::unordered_map<std::string, Landmark> landmark_table;
 
@@ -231,18 +273,14 @@ class Bot {
 public:
     Bot()
     {
-        ctx.landmark_table = {
-            {"REPF", {{0, 0}, 0.10}},
-            {"Felgar", {{-1, 0}, 0.90}},
-            {"Devon", {{-1, 2}, 0.05}},
-            {"Carson", {{1.5, -2}, 0.15}},
-            {"Sarkeys", {{1.5, -1}, 0.95}},
-            {"TheUnion", {{1.5, -2.25}, 0.15}},
-        };
+        std::string path = ros::package::getPath("major_project") + "/waypoints.tour";
+        ctx.landmark_table = load_waypoint_file(path);
 
         ctx.tour_sub = ctx.nh.subscribe("/tour_start", 1, &Bot::tourCallback, this);
         ctx.odom_sub = ctx.nh.subscribe("/odom", 1, &Bot::odomCallback, this);
         ctx.log_sub  = ctx.nh.subscribe("/rosout_agg", 100, &Bot::logCallback, this);
+
+        ctx.plan_pub = ctx.nh.advertise<nav_msgs::Path>("/tour_plan_path", 1, true);
 
         behaviors.push_back(std::make_unique<MoveBaseBehavior>(ctx));
     }
@@ -252,22 +290,35 @@ public:
         ROS_INFO("UI Requested Tour: %s", msg->data.c_str());
 
         std::stringstream ss(msg->data);
-        std::string name;
+        std::string token;
         std::vector<Landmark> selected;
 
-        while (std::getline(ss, name, ',')) {
-            name.erase(remove_if(name.begin(), name.end(), ::isspace), name.end());
-            if (name == "The Union") name = "TheUnion";
+        while (std::getline(ss, token, ','))
+        {
+            token.erase(remove_if(token.begin(), token.end(), ::isspace), token.end());
+
+            size_t colon = token.find(':');
+            if (colon == std::string::npos) {
+                ROS_WARN("Malformed entry (missing priority): %s", token.c_str());
+                continue;
+            }
+
+            std::string name = token.substr(0, colon);
+            double prio = atof(token.substr(colon + 1).c_str());
 
             auto it = ctx.landmark_table.find(name);
-            if (it != ctx.landmark_table.end())
-                selected.push_back(it->second);
-            else
-                ROS_WARN("Unknown landmark: %s", name.c_str());
+            if (it == ctx.landmark_table.end()) {
+                ROS_WARN("Unknown waypoint: %s", name.c_str());
+                continue;
+            }
+
+            Landmark lm = it->second;
+            lm.priority = prio;
+            selected.push_back(lm);
         }
 
         if (selected.empty()) {
-            ROS_WARN("Empty selection.");
+            ROS_WARN("Tour selection was empty.");
             return;
         }
 
@@ -275,6 +326,24 @@ public:
         ctx.current_plan_index = 0;
 
         ROS_INFO("Tour rebuilt with %lu points.", ctx.plan.size());
+
+        nav_msgs::Path p;
+        p.header.frame_id = "map";
+        p.header.stamp = ros::Time::now();
+
+        for (const auto& pt : ctx.plan)
+        {
+            geometry_msgs::PoseStamped ps;
+            ps.header = p.header;
+            ps.pose.position.x = pt.x;
+            ps.pose.position.y = pt.y;
+            ps.pose.position.z = 0.0;
+            ps.pose.orientation.w = 1.0;
+            p.poses.push_back(ps);
+        }
+
+        ctx.plan_pub.publish(p);
+        ROS_INFO("Published full tour plan to /tour_plan_path.");
     }
 
     void odomCallback(const nav_msgs::Odometry::ConstPtr& msg)

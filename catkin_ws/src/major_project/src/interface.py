@@ -3,36 +3,83 @@
 import sys
 import threading
 import math
-
+import numpy as np
+import rospkg
 import rospy
+
+
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rosgraph_msgs.msg import Log
 
-from PyQt5.QtCore import Qt, QTimer, QPointF
-from PyQt5.QtGui import QPixmap, QImage, qRgb, QPen, QColor, QPolygonF
+from PyQt5.QtGui import QPainter
+from PyQt5.QtWidgets import QGraphicsItem
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QPixmap, QImage, QPen, QColor
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QTabWidget, QListWidget, QListWidgetItem,
     QLabel, QVBoxLayout, QFormLayout, QMainWindow,
     QLineEdit, QTextEdit, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QGraphicsScene, QGraphicsView,
-    QGraphicsPolygonItem, QGraphicsLineItem
+    QTableWidgetItem, QHeaderView, QGraphicsScene, QGraphicsView, QGraphicsLineItem,
+    QGraphicsEllipseItem, QToolTip
 )
 
+# Helper class for tooltip-enabled ellipses, solves some
+# weird hover issues with zooming/panning views
+class TooltipEllipseItem(QGraphicsEllipseItem):
+    def __init__(self, *args, **kwargs):
+        super(TooltipEllipseItem, self).__init__(*args, **kwargs)
+        self.setAcceptHoverEvents(True)
+        self.tooltip_text = ""
 
+    def setTooltipText(self, text):
+        self.tooltip_text = text
 
+    def hoverEnterEvent(self, event):
+        QToolTip.showText(event.screenPos(), self.tooltip_text)
+        super(TooltipEllipseItem, self).hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        QToolTip.hideText()
+        super(TooltipEllipseItem, self).hoverLeaveEvent(event)
+
+# Helper class for zooming and panning
 class ZoomPanGraphicsView(QGraphicsView):
     def __init__(self, scene):
-        QGraphicsView.__init__(self, scene)
+        super(ZoomPanGraphicsView, self).__init__(scene)
+
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.zoom_factor = 1.15
 
+        # fix tooltip issues
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self.setInteractive(True)
+        self.setRenderHint(QPainter.Antialiasing)
+
+        # just improves the hit registration during zooming
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
+
     def wheelEvent(self, event):
         if event.angleDelta().y() > 0:
-            self.scale(self.zoom_factor, self.zoom_factor)
+            scale_factor = self.zoom_factor
         else:
-            self.scale(1.0 / self.zoom_factor, 1.0 / self.zoom_factor)
+            scale_factor = 1.0 / self.zoom_factor
+
+        # apply zoom and pass events
+        self.scale(scale_factor, scale_factor)
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        super(ZoomPanGraphicsView, self).mouseMoveEvent(event)
+        self.viewport().update()
+
+    def enterEvent(self, event):
+        super(ZoomPanGraphicsView, self).enterEvent(event)
+        self.setMouseTracking(True)
 
 
 
@@ -48,10 +95,25 @@ class MainWindow(QMainWindow):
         self.robot_y = None
         self.robot_yaw = 0.0
 
-        # Map and path
+        # Map / Path
         self.latest_map_msg = None
         self.global_path = []
-        self.map_dirty = False
+        self.full_plan = []
+
+        # Graphics items and flags
+        self.map_pixmap_item = None
+        self.robot_item = None
+        self.path_lines = []
+        self.start_segment_item = None
+        self.waypoint_markers = []
+
+        self.map_image_dirty = False
+        self.path_dirty = False
+        self.robot_dirty = False
+        self.plan_dirty = False
+
+        # Current plan segment index
+        self.current_seg_index = 0
 
         # Logs
         self.last_logs = []
@@ -60,10 +122,13 @@ class MainWindow(QMainWindow):
         # Speed
         self.current_speed_val = 0.0
 
-        # Waypoint tracking for execution tab
+        # Execution view values
         self.current_goal_str = "N/A"
         self.prev_goal_str = "N/A"
+        self.current_waypoint_name = "N/A"
+        self.prev_waypoint_name = "N/A"
 
+        # Tabs
         self.tabs = QTabWidget()
         self.tabs.addTab(self.build_planning_tab(), "Planning")
         self.tabs.addTab(self.build_execution_tab(), "Execution")
@@ -71,6 +136,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.build_map_tab(), "Simulation Map")
         self.tabs.addTab(self.build_references_tab(), "References")
         self.setCentralWidget(self.tabs)
+
+        # Tab indices
+        self.LOG_TAB_INDEX = 2
+        self.MAP_TAB_INDEX = 3
 
         self.pub_tour = rospy.Publisher("/tour_start", String, queue_size=1)
 
@@ -80,6 +149,61 @@ class MainWindow(QMainWindow):
         rospy.Subscriber("/map", OccupancyGrid, self.map_callback)
         rospy.Subscriber("/move_base/GlobalPlanner/plan", Path, self.path_callback)
         rospy.Subscriber("/move_base/NavfnROS/plan", Path, self.path_callback)
+        rospy.Subscriber("/tour_plan_path", Path, self.tour_plan_callback)
+
+    # laods in waypoints from the file
+    def load_waypoint_file(self):
+        rp = rospkg.RosPack()
+        filepath = rp.get_path("major_project") + "/waypoints.tour"
+        table = {}
+
+        try:
+            with open(filepath, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or ":" not in line:
+                        continue
+
+                    name, coords = line.split(":", 1)
+                    table[name.strip()] = coords.strip()
+
+            rospy.loginfo("UI: Loaded %d waypoints from file.", len(table))
+
+        except Exception as e:
+            rospy.logerr("UI: Failed to load waypoint file: %s", str(e))
+
+        return table
+
+    # builds a numeric table for waypoint coordinates
+    def build_waypoint_coords(self):
+        self.waypoint_coords = {}
+        for name, coord_str in self.waypoint_table.items():
+            try:
+                parts = coord_str.split(",")
+                if len(parts) < 2:
+                    continue
+                x = float(parts[0].strip())
+                y = float(parts[1].strip())
+                self.waypoint_coords[name] = (x, y)
+            except Exception as e:
+                rospy.logwarn(
+                    "UI: Failed to parse coords for waypoint '%s': %s", name, str(e)
+                )
+
+    # finds the closest waypoint name to given coordinates
+    def find_closest_waypoint_name(self, x, y):
+        if not hasattr(self, "waypoint_coords") or not self.waypoint_coords:
+            return "Unknown"
+
+        best_name = "Unknown"
+        best_dist = None
+        for name, (wx, wy) in self.waypoint_coords.items():
+            d = math.hypot(wx - x, wy - y)
+            if best_dist is None or d < best_dist:
+                best_dist = d
+                best_name = name
+
+        return best_name
 
     def build_planning_tab(self):
         tab = QWidget()
@@ -90,8 +214,14 @@ class MainWindow(QMainWindow):
 
         self.waypoints = QListWidget()
         self.waypoints.setDragDropMode(QListWidget.InternalMove)
-        for wp in ["REPF", "Felgar", "Devon", "Carson", "Sarkeys", "The Union"]:
-            self.waypoints.addItem(QListWidgetItem(wp))
+
+        # Load from file
+        self.waypoint_table = self.load_waypoint_file()
+        self.build_waypoint_coords()
+
+        for wp_name in self.waypoint_table.keys():
+            self.waypoints.addItem(QListWidgetItem(wp_name))
+
         layout.addWidget(self.waypoints)
 
         btn = QPushButton("Start Tour")
@@ -166,15 +296,21 @@ class MainWindow(QMainWindow):
         authors = QTextEdit()
         authors.setReadOnly(True)
         authors.setText("Dylan Zemlin\nSpencer Smith\nKenneth Thompson\nAlexander Greus")
-        layout.addWidget(authors)
 
+        layout.addWidget(authors)
         tab.setLayout(layout)
         return tab
 
     def send_tour_request(self):
         pts = []
-        for i in range(self.waypoints.count()):
-            pts.append(str(self.waypoints.item(i).text()))
+        count = self.waypoints.count()
+
+        # Highest priority for first element
+        for i in range(count):
+            name = str(self.waypoints.item(i).text())
+            priority = count - i
+            pts.append("%s:%d" % (name, priority))
+
         msg = ",".join(pts)
         rospy.loginfo("UI sending tour: %s" % msg)
         self.pub_tour.publish(msg)
@@ -189,7 +325,7 @@ class MainWindow(QMainWindow):
             self.robot_y = msg.pose.pose.position.y
 
         if self.latest_map_msg is not None:
-            self.map_dirty = True
+            self.robot_dirty = True
 
     def amcl_callback(self, msg):
         self.robot_x = msg.pose.pose.position.x
@@ -201,31 +337,45 @@ class MainWindow(QMainWindow):
         self.robot_yaw = math.atan2(siny, cosy)
 
         if self.latest_map_msg is not None:
-            self.map_dirty = True
+            self.robot_dirty = True
 
     def path_callback(self, msg):
+        if self.current_waypoint_name not in ("N/A", "Unknown"):
+            self.prev_waypoint_name = self.current_waypoint_name
+
         if self.global_path:
             last = self.global_path[-1]
             self.prev_goal_str = "(%.2f, %.2f)" % (last[0], last[1])
 
+        # Store path from move_base planners for timing and goal name inference
         self.global_path = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
         rospy.loginfo("UI: Received path with %d points" % len(self.global_path))
 
         if self.global_path:
             goal = self.global_path[-1]
             self.current_goal_str = "(%.2f, %.2f)" % (goal[0], goal[1])
+            self.current_waypoint_name = self.find_closest_waypoint_name(goal[0], goal[1])
 
         if self.latest_map_msg is not None:
-            self.map_dirty = True
+            self.path_dirty = True
+            self.robot_dirty = True
+
+    def tour_plan_callback(self, msg):
+        self.full_plan = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
+        rospy.loginfo("UI: Received full plan with %d waypoints" % len(self.full_plan))
+        self.plan_dirty = True
+        self.current_seg_index = 0
 
     def map_callback(self, msg):
         self.latest_map_msg = msg
-        self.map_dirty = True
+        self.map_image_dirty = True
+        self.path_dirty = True
+        self.robot_dirty = True
 
     def log_callback(self, msg):
         try:
             ts = msg.header.stamp.to_sec()
-        except:
+        except Exception:
             ts = rospy.get_time()
         lvl = getattr(msg, "level", -1)
         txt = getattr(msg, "msg", str(msg))
@@ -249,107 +399,68 @@ class MainWindow(QMainWindow):
         self.log_table.scrollToBottom()
 
     def compute_time_estimates(self):
-        if not self.global_path or self.robot_x is None:
+        path = list(self.global_path)
+
+        if not path or self.robot_x is None:
             return "N/A", "N/A"
 
-        speed = self.current_speed_val
-        if speed < 0.05:
-            speed = 0.05
+        speed = max(self.current_speed_val, 0.05)
 
-        # Distance from robot to first path point
-        p0x, p0y = self.global_path[0]
+        p0x, p0y = path[0]
         curr_dist = math.hypot(p0x - self.robot_x, p0y - self.robot_y)
 
-        # Total distance along path
         total_dist = curr_dist
-        for i in range(len(self.global_path) - 1):
-            x1, y1 = self.global_path[i]
-            x2, y2 = self.global_path[i + 1]
+        for i in range(len(path) - 1):
+            x1, y1 = path[i]
+            x2, y2 = path[i + 1]
             total_dist += math.hypot(x2 - x1, y2 - y1)
 
-        t_curr = curr_dist / speed
-        t_total = total_dist / speed
+        return "%.1f sec" % (curr_dist / speed), "%.1f sec" % (total_dist / speed)
 
-        return "%.1f sec" % t_curr, "%.1f sec" % t_total
+    # calculates estimated time to a given waypoint index
+    # still needs some work, a bit funky and honestly not very accurate
+    def estimate_time_to_waypoint(self, wp_index):
+        if self.robot_x is None or self.robot_y is None:
+            return None
+        if not self.full_plan or wp_index < 0 or wp_index >= len(self.full_plan):
+            return None
 
-    def draw_robot(self):
-        if self.robot_x is None or self.latest_map_msg is None:
-            return
+        speed = max(self.current_speed_val, 0.05)
+        if speed < 0.01:
+            return None
 
-        # Make the robot clearly visible
-        size = 1.0
+        if len(self.full_plan) < 2:
+            return None
 
-        p1 = QPointF(0.0, size)
-        p2 = QPointF(-size / 2.0, -size / 2.0)
-        p3 = QPointF(size / 2.0, -size / 2.0)
-        triangle = QPolygonF([p1, p2, p3])
+        base_index = min(self.current_seg_index, len(self.full_plan) - 2)
 
-        item = QGraphicsPolygonItem(triangle)
-        item.setBrush(QColor(255, 0, 0))
-        item.setPen(QPen(Qt.black, 0))
+        if wp_index <= base_index:
+            return 0.0
 
-        res = self.latest_map_msg.info.resolution
-        ox = self.latest_map_msg.info.origin.position.x
-        oy = self.latest_map_msg.info.origin.position.y
-        height = self.latest_map_msg.info.height
+        rx, ry = self.robot_x, self.robot_y
+        sx, sy = self.full_plan[base_index]
 
-        px = (self.robot_x - ox) / res
-        py = height - ((self.robot_y - oy) / res)
+        dist_total = math.hypot(rx - sx, ry - sy)
 
-        item.setPos(px, py)
-        item.setRotation(-math.degrees(self.robot_yaw))
+        for i in range(base_index, wp_index):
+            x1, y1 = self.full_plan[i]
+            x2, y2 = self.full_plan[i + 1]
+            dist_total += math.hypot(x2 - x1, y2 - y1)
 
-        self.map_scene.addItem(item)
-        self.map_view.centerOn(px, py)
+        return dist_total / speed
 
-    def draw_path(self):
-        if self.latest_map_msg is None:
-            return
-        if len(self.global_path) < 2:
-            return
+    def format_eta(self, seconds):
+        if seconds is None:
+            return "N/A"
+        if seconds < 0:
+            seconds = 0.0
+        if seconds < 60.0:
+            return "%.1f s" % seconds
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return "%d:%02d min" % (m, s)
 
-        res = self.latest_map_msg.info.resolution
-        ox = self.latest_map_msg.info.origin.position.x
-        oy = self.latest_map_msg.info.origin.position.y
-        height = self.latest_map_msg.info.height
-
-        if self.robot_x is not None:
-            rx = self.robot_x
-            ry = self.robot_y
-            tx = self.global_path[0][0]
-            ty = self.global_path[0][1]
-
-            rpx = (rx - ox) / res
-            rpy = height - ((ry - oy) / res)
-            tpx = (tx - ox) / res
-            tpy = height - ((ty - oy) / res)
-
-            seg = QGraphicsLineItem(rpx, rpy, tpx, tpy)
-            seg.setPen(QPen(QColor(255, 0, 0), 2))
-            self.map_scene.addItem(seg)
-
-        pen = QPen(QColor(0, 0, 255), 1)
-        for i in range(len(self.global_path) - 1):
-            x1, y1 = self.global_path[i]
-            x2, y2 = self.global_path[i + 1]
-
-            px1 = (x1 - ox) / res
-            py1 = height - ((y1 - oy) / res)
-            px2 = (x2 - ox) / res
-            py2 = height - ((y2 - oy) / res)
-
-            line = QGraphicsLineItem(px1, py1, px2, py2)
-            line.setPen(pen)
-            self.map_scene.addItem(line)
-
-        self.prev_waypoint.setText(self.prev_goal_str)
-        self.next_waypoint.setText(self.current_goal_str)
-
-        t_curr, t_total = self.compute_time_estimates()
-        self.time_to_next.setText(t_curr)
-        self.time_to_completion.setText(t_total)
-
-    def update_map_view(self):
+    def update_map_image(self):
         msg = self.latest_map_msg
         if msg is None:
             return
@@ -358,41 +469,195 @@ class MainWindow(QMainWindow):
         h = msg.info.height
         data = msg.data
 
-        if w == 0 or h == 0:
+        if w == 0 or h == 0 or not data:
             return
 
-        img = QImage(w, h, QImage.Format_RGB888)
-        for y in range(h):
-            for x in range(w):
-                val = data[x + y * w]
-                if val == 0:
-                    c = qRgb(255, 255, 255)
-                elif val == 100:
-                    c = qRgb(0, 0, 0)
-                else:
-                    c = qRgb(127, 127, 127)
-                img.setPixel(x, h - 1 - y, c)
+        try:
+            arr = np.array(data, dtype=np.int8).reshape((h, w))
+        except Exception as e:
+            rospy.logerr("UI: Failed to reshape map data: %s", str(e))
+            return
 
-        pix = QPixmap.fromImage(img)
+        qimg = QImage(w, h, QImage.Format_RGB888)
+        ptr = qimg.bits()
+        ptr.setsize(h * w * 3)
+        img_np = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 3))
 
-        self.map_scene.clear()
-        self.map_scene.addPixmap(pix)
+        img_np[arr == 0] = [255, 255, 255] # free space
+        img_np[arr == 100] = [0, 0, 0] # occupied
+        mask_unknown = (arr != 0) & (arr != 100) # unknown
+        img_np[mask_unknown] = [127, 127, 127] # unknown
+        img_np[:] = np.flipud(img_np) # flip vertically
+        pix = QPixmap.fromImage(qimg)
 
-        self.draw_path()
-        self.draw_robot()
+        if self.map_pixmap_item is None:
+            self.map_pixmap_item = self.map_scene.addPixmap(pix)
+        else:
+            self.map_pixmap_item.setPixmap(pix)
 
         self.map_scene.setSceneRect(0, 0, w, h)
+
+    def update_robot_item(self):
+        if self.robot_x is None or self.latest_map_msg is None:
+            return
+
+        # Map info
+        res = self.latest_map_msg.info.resolution
+        ox = self.latest_map_msg.info.origin.position.x
+        oy = self.latest_map_msg.info.origin.position.y
+        height = self.latest_map_msg.info.height
+
+        # Convert world coords to map pixel coords
+        px = (self.robot_x - ox) / res
+        py = height - ((self.robot_y - oy) / res)
+
+        if self.robot_item is None:
+            radius = 6
+            self.robot_item = self.map_scene.addEllipse(
+                -radius, -radius, radius*2, radius*2,
+                QPen(Qt.black, 1),
+                QColor(160, 32, 240)
+            )
+            self.robot_item.setZValue(2)
+
+        self.robot_item.setPos(px, py)
+        self.robot_item.setZValue(2)
+
+    def update_path_items(self):
+        if self.latest_map_msg is None:
+            return
+
+        # Map info
+        res = self.latest_map_msg.info.resolution
+        ox = self.latest_map_msg.info.origin.position.x
+        oy = self.latest_map_msg.info.origin.position.y
+        height = self.latest_map_msg.info.height
+
+        # Clear old path lines
+        for line in self.path_lines:
+            self.map_scene.removeItem(line)
+        self.path_lines = []
+
+        # Clear old waypoint markers
+        for m in self.waypoint_markers:
+            self.map_scene.removeItem(m)
+        self.waypoint_markers = []
+
+        if len(self.full_plan) < 2:
+            return
+
+        if self.robot_x is not None and self.robot_y is not None:
+            if self.current_seg_index >= len(self.full_plan) - 1:
+                self.current_seg_index = len(self.full_plan) - 2
+
+            i = self.current_seg_index
+            x_curr, y_curr = self.full_plan[i]
+            x_next, y_next = self.full_plan[i + 1]
+            seg_len = math.hypot(x_next - x_curr, y_next - y_curr)
+
+            if seg_len > 1e-3:
+                d_to_next = math.hypot(self.robot_x - x_next, self.robot_y - y_next)
+                progress = 1.0 - (d_to_next / seg_len)
+                if progress >= 0.85 and self.current_seg_index < len(self.full_plan) - 2:
+                    self.current_seg_index += 1
+
+        current_seg = self.current_seg_index
+
+        for i in range(len(self.full_plan) - 1):
+            x1, y1 = self.full_plan[i]
+            x2, y2 = self.full_plan[i + 1]
+
+            px1 = (x1 - ox) / res
+            py1 = height - ((y1 - oy) / res)
+            px2 = (x2 - ox) / res
+            py2 = height - ((y2 - oy) / res)
+
+            line = QGraphicsLineItem(px1, py1, px2, py2)
+
+            if i < current_seg:
+                pen = QPen(QColor(160, 160, 160), 2)
+                pen.setStyle(Qt.DotLine)
+            elif i == current_seg:
+                pen = QPen(QColor(0, 0, 255, 160), 3)
+            else:
+                pen = QPen(QColor(0, 0, 0), 2)
+
+            line.setPen(pen)
+            line.setZValue(1)
+            self.map_scene.addItem(line)
+            self.path_lines.append(line)
+
+        for idx, (wx, wy) in enumerate(self.full_plan):
+            px = (wx - ox) / res
+            py = height - ((wy - oy) / res)
+            marker = TooltipEllipseItem(px - 3, py - 3, 6, 6)
+            marker.setBrush(QColor(0, 255, 0))
+            marker.setPen(QPen(Qt.black))
+            self.map_scene.addItem(marker)
+            marker.setAcceptHoverEvents(True)
+            marker.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            marker.setZValue(10)
+
+            # Compute waypoint name
+            name = self.find_closest_waypoint_name(wx, wy)
+
+            if idx < current_seg:
+                status = "Visited waypoint"
+                eta_text = ""
+            elif idx == current_seg:
+                status = "Last passed waypoint"
+                eta_text = ""
+            elif idx == current_seg + 1:
+                status = "Current target waypoint"
+                eta_val = self.estimate_time_to_waypoint(idx)
+                eta_text = "\nETA: " + self.format_eta(eta_val) if eta_val else "\nETA: N/A"
+            else:
+                status = "Upcoming waypoint"
+                eta_val = self.estimate_time_to_waypoint(idx)
+                eta_text = "\nETA: " + self.format_eta(eta_val) if eta_val else "\nETA: N/A"
+
+            tooltip = "{}\n({:.2f}, {:.2f})\n{}{}".format(
+                name, wx, wy, status, eta_text
+            )
+            marker.setTooltipText(tooltip)
+
+            self.waypoint_markers.append(marker)
+
 
     def on_timer(self):
         self.current_speed.setText("%.2f m/s" % self.current_speed_val)
 
-        if self.logs_dirty:
+        # Always update execution tab text fields (even if tab not visible)
+        self.prev_waypoint.setText(self.prev_waypoint_name)
+        self.next_waypoint.setText(self.current_waypoint_name)
+        t_curr, t_total = self.compute_time_estimates()
+        self.time_to_next.setText(t_curr)
+        self.time_to_completion.setText(t_total)
+
+        # Only update logs if the Logs tab is visible
+        if self.logs_dirty and self.tabs.currentIndex() == self.LOG_TAB_INDEX:
             self.update_log_table()
             self.logs_dirty = False
 
-        if self.map_dirty:
-            self.update_map_view()
-            self.map_dirty = False
+        # Only do heavy map work if simulation tab is visible
+        if self.tabs.currentIndex() == self.MAP_TAB_INDEX:
+            if self.map_image_dirty:
+                self.update_map_image()
+                self.map_image_dirty = False
+                self.path_dirty = True
+                self.robot_dirty = True
+
+            if self.plan_dirty:
+                self.path_dirty = True
+                self.plan_dirty = False
+
+            if self.path_dirty:
+                self.update_path_items()
+                self.path_dirty = False
+
+            if self.robot_dirty:
+                self.update_robot_item()
+                self.robot_dirty = False
 
 
 def ros_spin_thread():
@@ -413,7 +678,7 @@ if __name__ == "__main__":
 
     timer = QTimer()
     timer.timeout.connect(window.on_timer)
-    timer.start(100)
+    timer.start(200)
 
     app.exec_()
 

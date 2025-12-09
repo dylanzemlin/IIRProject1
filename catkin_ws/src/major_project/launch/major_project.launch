@@ -14,7 +14,7 @@
   </include>
 
   <!-- Spawn Robot -->
-  <env name="ROBOT_INITIAL_POSE" value="-x 1.0 -y 2.0 -z 0.0 -Y 0.0" />
+  <env name="ROBOT_INITIAL_POSE" value="-x 1.0 -y 2.0 -z 0.0 -Y 0" />
   <include file="$(find turtlebot_gazebo)/launch/includes/$(arg base).launch.xml">
     <arg name="base" value="$(arg base)"/>
     <arg name="stacks" value="$(arg stacks)"/>
@@ -40,7 +40,7 @@
 
   <!-- Localization -->
   <arg name="initial_pose_x" default="0.0"/>
-  <arg name="initial_pose_y" default="0.0"/>
+  <arg name="initial_pose_y" default="1.5708"/>
   <arg name="initial_pose_a" default="0.0"/>
   <arg name="custom_amcl_launch_file" default="$(find turtlebot_navigation)/launch/includes/amcl/$(arg 3d_sensor)_amcl.launch.xml"/>
 
@@ -57,6 +57,6 @@
   <include file="$(find turtlebot_rviz_launchers)/launch/view_navigation.launch"/>
 
   <!-- Our Architecture -->
-  <node pkg="major_project" type="major_project" name="major_project" output="screen">
-  </node>
+  <!-- <node pkg="major_project" type="major_project" name="major_project" output="screen">
+  </node> -->
 </launch>
