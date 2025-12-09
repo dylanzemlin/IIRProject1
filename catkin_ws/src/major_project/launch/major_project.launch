@@ -36,7 +36,7 @@
     <remap from="scan" to="/scan"/>
   </node>
 
-  <node pkg="map_server" type="map_server" name="static_map" args="$(find major_project)/worlds/hallway_map.yaml" />
+  <node pkg="map_server" type="map_server" name="static_map" args="$(find major_project)/worlds/sarkeys_map.yaml" />
 
   <!-- Localization -->
   <arg name="initial_pose_x" default="0.0"/>
