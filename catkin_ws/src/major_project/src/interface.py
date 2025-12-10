@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QTextEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QGraphicsScene, QGraphicsView,
     QGraphicsLineItem, QGraphicsEllipseItem, QGraphicsTextItem,
-    QToolTip, QMessageBox
+    QToolTip, QMessageBox, QGraphicsItem
 )
 from PyQt5.QtCore import Qt, QTimer
 
