@@ -218,6 +218,7 @@ struct Context {
     ros::Subscriber log_sub;
 
     ros::Publisher plan_pub;
+    ros::Publisher cmd_vel_pub;
 
     std::unordered_map<std::string, Landmark> landmark_table;
 
@@ -238,6 +239,9 @@ struct Context {
     bool tour_active = false;
     double tour_start_time = 0.0;
     double tour_time_budget = -1.0; // seconds, <0 means no budget
+
+    // Pause flag when time expires
+    bool paused_by_timeout = false;
 };
 
 class Behavior {
@@ -263,6 +267,11 @@ public:
 
     bool run() override
     {
+        // If paused due to timeout, do nothing
+        if (ctx.paused_by_timeout) {
+            return false;
+        }
+
         if (ctx.current_plan_index >= ctx.plan.size())
             return false;
 
@@ -307,6 +316,7 @@ public:
         ctx.log_sub  = ctx.nh.subscribe("/rosout_agg", 100, &Bot::logCallback, this);
 
         ctx.plan_pub = ctx.nh.advertise<nav_msgs::Path>("/tour_plan_path", 1, true);
+        ctx.cmd_vel_pub = ctx.nh.advertise<geometry_msgs::Twist>("/cmd_vel", 1, true);
 
         behaviors.push_back(std::make_unique<MoveBaseBehavior>(ctx));
     }
@@ -316,14 +326,25 @@ public:
         const std::string data_raw = msg->data;
 
         // Handle control actions first
+        if (data_raw == "ACTION=STOP_NOW") {
+            ROS_INFO("Tour: time expired, stopping robot until user decides.");
+            stopRobot();
+            ctx.paused_by_timeout = true;
+            return;
+        }
+
         if (data_raw == "ACTION=CONTINUE") {
-            ROS_INFO("Tour: user chose to continue. Disabling time budget enforcement.");
+            ROS_INFO("Tour: user chose to continue. Disabling time budget and resuming.");
             ctx.tour_time_budget = -1.0;
+            ctx.paused_by_timeout = false;
+            ctx.tour_active = false;
             return;
         }
 
         if (data_raw == "ACTION=RETURN") {
             ROS_INFO("Tour: user requested return to start.");
+            stopRobot();
+            ctx.paused_by_timeout = false;
 
             if (!ctx.has_start_pose) {
                 ROS_WARN("Return requested but start pose is unknown.");
@@ -395,7 +416,8 @@ public:
             return;
         }
 
-        // Set timing info for tour
+        // Reset pause and set timing info for tour
+        ctx.paused_by_timeout = false;
         ctx.tour_time_budget = time_budget;
         ctx.tour_start_time = ros::Time::now().toSec();
         ctx.tour_active = true;
@@ -470,6 +492,29 @@ private:
         }
 
         ctx.plan_pub.publish(p);
+    }
+
+    void stopRobot()
+    {
+        ROS_WARN("Stopping robot: cancelling move_base goals and publishing zero velocity.");
+
+        // Cancel move_base goals
+        actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> ac("move_base", true);
+        if (!ac.waitForServer(ros::Duration(1.0))) {
+            ROS_WARN("stopRobot: move_base server not available within timeout, sending zero cmd_vel anyway.");
+        } else {
+            ac.cancelAllGoals();
+        }
+
+        // Publish zero velocity
+        geometry_msgs::Twist stop_twist;
+        stop_twist.linear.x = 0.0;
+        stop_twist.linear.y = 0.0;
+        stop_twist.linear.z = 0.0;
+        stop_twist.angular.x = 0.0;
+        stop_twist.angular.y = 0.0;
+        stop_twist.angular.z = 0.0;
+        ctx.cmd_vel_pub.publish(stop_twist);
     }
 
     std::vector<PointFt> buildTimeConstrainedPlan(const std::vector<Landmark>& selected,
