@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import sys
 import threading
@@ -7,26 +7,24 @@ import numpy as np
 import rospkg
 import rospy
 
-
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rosgraph_msgs.msg import Log
 
-from PyQt5.QtGui import QPainter
-from PyQt5.QtWidgets import QGraphicsItem
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPixmap, QImage, QPen, QColor
+from PyQt5.QtGui import QPainter, QPixmap, QImage, QPen, QColor
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QTabWidget, QListWidget, QListWidgetItem,
     QLabel, QVBoxLayout, QFormLayout, QMainWindow,
     QLineEdit, QTextEdit, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QGraphicsScene, QGraphicsView, QGraphicsLineItem,
-    QGraphicsEllipseItem, QToolTip
+    QTableWidgetItem, QHeaderView, QGraphicsScene, QGraphicsView,
+    QGraphicsLineItem, QGraphicsEllipseItem, QGraphicsTextItem,
+    QToolTip, QMessageBox
 )
+from PyQt5.QtCore import Qt, QTimer
 
-# Helper class for tooltip-enabled ellipses, solves some
-# weird hover issues with zooming/panning views
+
+# Helper class for tooltip-enabled ellipses
 class TooltipEllipseItem(QGraphicsEllipseItem):
     def __init__(self, *args, **kwargs):
         super(TooltipEllipseItem, self).__init__(*args, **kwargs)
@@ -43,6 +41,7 @@ class TooltipEllipseItem(QGraphicsEllipseItem):
     def hoverLeaveEvent(self, event):
         QToolTip.hideText()
         super(TooltipEllipseItem, self).hoverLeaveEvent(event)
+
 
 # Helper class for zooming and panning
 class ZoomPanGraphicsView(QGraphicsView):
@@ -69,7 +68,6 @@ class ZoomPanGraphicsView(QGraphicsView):
         else:
             scale_factor = 1.0 / self.zoom_factor
 
-        # apply zoom and pass events
         self.scale(scale_factor, scale_factor)
         event.accept()
 
@@ -80,7 +78,6 @@ class ZoomPanGraphicsView(QGraphicsView):
     def enterEvent(self, event):
         super(ZoomPanGraphicsView, self).enterEvent(event)
         self.setMouseTracking(True)
-
 
 
 class MainWindow(QMainWindow):
@@ -104,8 +101,8 @@ class MainWindow(QMainWindow):
         self.map_pixmap_item = None
         self.robot_item = None
         self.path_lines = []
-        self.start_segment_item = None
         self.waypoint_markers = []
+        self.time_text_item = None
 
         self.map_image_dirty = False
         self.path_dirty = False
@@ -127,6 +124,11 @@ class MainWindow(QMainWindow):
         self.prev_goal_str = "N/A"
         self.current_waypoint_name = "N/A"
         self.prev_waypoint_name = "N/A"
+
+        # Tour time management
+        self.tour_duration_sec = None
+        self.tour_start_time = None
+        self.timer_alert_shown = False
 
         # Tabs
         self.tabs = QTabWidget()
@@ -151,7 +153,7 @@ class MainWindow(QMainWindow):
         rospy.Subscriber("/move_base/NavfnROS/plan", Path, self.path_callback)
         rospy.Subscriber("/tour_plan_path", Path, self.tour_plan_callback)
 
-    # laods in waypoints from the file
+    # loads in waypoints from the file
     def load_waypoint_file(self):
         rp = rospkg.RosPack()
         filepath = rp.get_path("major_project") + "/waypoints.tour"
@@ -224,6 +226,12 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.waypoints)
 
+        # Time input
+        layout.addWidget(QLabel("Desired Tour Duration (seconds):"))
+        self.tour_duration_input = QLineEdit()
+        self.tour_duration_input.setPlaceholderText("e.g., 600")
+        layout.addWidget(self.tour_duration_input)
+
         btn = QPushButton("Start Tour")
         btn.clicked.connect(self.send_tour_request)
         layout.addWidget(btn)
@@ -242,6 +250,7 @@ class MainWindow(QMainWindow):
         self.next_waypoint = QLineEdit()
         self.time_to_next = QLineEdit()
         self.time_to_completion = QLineEdit()
+        self.time_remaining = QLineEdit()
 
         for box in [
             self.current_speed,
@@ -249,6 +258,7 @@ class MainWindow(QMainWindow):
             self.next_waypoint,
             self.time_to_next,
             self.time_to_completion,
+            self.time_remaining,
         ]:
             box.setReadOnly(True)
 
@@ -256,7 +266,8 @@ class MainWindow(QMainWindow):
         form.addRow("Previous Waypoint:", self.prev_waypoint)
         form.addRow("Next Waypoint:", self.next_waypoint)
         form.addRow("Time to Next Segment:", self.time_to_next)
-        form.addRow("Total Time Remaining:", self.time_to_completion)
+        form.addRow("Total Time Remaining (Path):", self.time_to_completion)
+        form.addRow("Tour Time Remaining (Budget):", self.time_remaining)
 
         layout.addLayout(form)
         tab.setLayout(layout)
@@ -311,9 +322,24 @@ class MainWindow(QMainWindow):
             priority = count - i
             pts.append("%s:%d" % (name, priority))
 
-        msg = ",".join(pts)
-        rospy.loginfo("UI sending tour: %s" % msg)
-        self.pub_tour.publish(msg)
+        # Time budget
+        duration_str = self.tour_duration_input.text().strip()
+        if not duration_str.isdigit():
+            rospy.logwarn("UI: Invalid or empty duration; using default of 600 sec")
+            duration_str = "600"
+
+        try:
+            self.tour_duration_sec = int(duration_str)
+        except ValueError:
+            self.tour_duration_sec = 600
+
+        self.tour_start_time = rospy.get_time()
+        self.timer_alert_shown = False
+
+        msg_str = "TIME=" + str(self.tour_duration_sec) + ";" + ",".join(pts)
+
+        rospy.loginfo("UI sending tour: %s" % msg_str)
+        self.pub_tour.publish(msg_str)
 
     def odom_callback(self, msg):
         vx = msg.twist.twist.linear.x
@@ -418,7 +444,6 @@ class MainWindow(QMainWindow):
         return "%.1f sec" % (curr_dist / speed), "%.1f sec" % (total_dist / speed)
 
     # calculates estimated time to a given waypoint index
-    # still needs some work, a bit funky and honestly not very accurate
     def estimate_time_to_waypoint(self, wp_index):
         if self.robot_x is None or self.robot_y is None:
             return None
@@ -483,11 +508,11 @@ class MainWindow(QMainWindow):
         ptr.setsize(h * w * 3)
         img_np = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 3))
 
-        img_np[arr == 0] = [255, 255, 255] # free space
-        img_np[arr == 100] = [0, 0, 0] # occupied
-        mask_unknown = (arr != 0) & (arr != 100) # unknown
-        img_np[mask_unknown] = [127, 127, 127] # unknown
-        img_np[:] = np.flipud(img_np) # flip vertically
+        img_np[arr == 0] = [255, 255, 255]  # free space
+        img_np[arr == 100] = [0, 0, 0]      # occupied
+        mask_unknown = (arr != 0) & (arr != 100)  # unknown
+        img_np[mask_unknown] = [127, 127, 127]    # unknown
+        img_np[:] = np.flipud(img_np)             # flip vertically
         pix = QPixmap.fromImage(qimg)
 
         if self.map_pixmap_item is None:
@@ -514,7 +539,7 @@ class MainWindow(QMainWindow):
         if self.robot_item is None:
             radius = 6
             self.robot_item = self.map_scene.addEllipse(
-                -radius, -radius, radius*2, radius*2,
+                -radius, -radius, radius * 2, radius * 2,
                 QPen(Qt.black, 1),
                 QColor(160, 32, 240)
             )
@@ -544,6 +569,8 @@ class MainWindow(QMainWindow):
         self.waypoint_markers = []
 
         if len(self.full_plan) < 2:
+            # Still update time overlay even with no plan
+            self.update_time_overlay()
             return
 
         if self.robot_x is not None and self.robot_y is not None:
@@ -623,16 +650,72 @@ class MainWindow(QMainWindow):
 
             self.waypoint_markers.append(marker)
 
+        # Map overlay for remaining time
+        self.update_time_overlay()
+
+    def update_time_overlay(self):
+        if self.tour_duration_sec and self.tour_start_time:
+            elapsed = rospy.get_time() - self.tour_start_time
+            remaining = max(self.tour_duration_sec - elapsed, 0.0)
+            text = "Tour Time Remaining: " + self.format_eta(remaining)
+        else:
+            text = "Tour Time Remaining: N/A"
+
+        if self.time_text_item is None:
+            self.time_text_item = QGraphicsTextItem(text)
+            self.time_text_item.setDefaultTextColor(QColor(0, 0, 0))
+            self.time_text_item.setZValue(20)
+            self.map_scene.addItem(self.time_text_item)
+        else:
+            self.time_text_item.setPlainText(text)
+
+        # Place in top-left corner of scene
+        rect = self.map_scene.sceneRect()
+        self.time_text_item.setPos(rect.left() + 10, rect.top() + 10)
 
     def on_timer(self):
         self.current_speed.setText("%.2f m/s" % self.current_speed_val)
 
-        # Always update execution tab text fields (even if tab not visible)
+        # Always update execution tab text fields
         self.prev_waypoint.setText(self.prev_waypoint_name)
         self.next_waypoint.setText(self.current_waypoint_name)
         t_curr, t_total = self.compute_time_estimates()
         self.time_to_next.setText(t_curr)
         self.time_to_completion.setText(t_total)
+
+        # Tour time remaining (budget)
+        remaining = None
+        if self.tour_start_time is not None and self.tour_duration_sec is not None:
+            elapsed = rospy.get_time() - self.tour_start_time
+            remaining = max(self.tour_duration_sec - elapsed, 0.0)
+            self.time_remaining.setText(self.format_eta(remaining))
+        else:
+            self.time_remaining.setText("N/A")
+
+        # If timer expired, ask user what to do (once)
+        if (
+            self.tour_start_time is not None
+            and self.tour_duration_sec is not None
+            and remaining is not None
+            and remaining <= 0.0
+            and not self.timer_alert_shown
+        ):
+            self.timer_alert_shown = True
+            choice = QMessageBox.question(
+                self,
+                "Tour Time Expired",
+                "Tour time has elapsed.\n\n"
+                "Yes: Continue tour\n"
+                "No: Return to starting position",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if choice == QMessageBox.Yes:
+                rospy.loginfo("UI: User chose to continue tour.")
+                self.pub_tour.publish("ACTION=CONTINUE")
+            else:
+                rospy.loginfo("UI: User chose to return to start.")
+                self.pub_tour.publish("ACTION=RETURN")
 
         # Only update logs if the Logs tab is visible
         if self.logs_dirty and self.tabs.currentIndex() == self.LOG_TAB_INDEX:
