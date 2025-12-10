@@ -30,9 +30,9 @@
   <include file="$(find turtlebot_rviz_launchers)/launch/view_navigation.launch"/>
 
   <!-- Our Architecture -->
-  <node pkg="major_project" type="interface.py" name="interface" output="screen">
-  </node>
+  <!-- <node pkg="major_project" type="interface.py" name="interface" output="screen">
+  </node> -->
 
-  <node pkg="major_project" type="major_project" name="major_project" output="screen">
-  </node>
+  <!-- <node pkg="major_project" type="major_project" name="major_project" output="screen">
+  </node> -->
 </launch>
