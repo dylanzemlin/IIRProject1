@@ -557,7 +557,7 @@ class MainWindow(QMainWindow):
             )
             self.robot_item.setZValue(2)
 
-        # If frozen, do not move robot — leave it at last known location and color it red
+        # If frozen, do not move robot leave it at last known location and color it red
         if self.robot_frozen:
             self.robot_item.setBrush(QColor(255, 0, 0))  # red
             return
