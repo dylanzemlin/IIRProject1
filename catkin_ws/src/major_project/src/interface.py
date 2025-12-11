@@ -460,8 +460,9 @@ class MainWindow(QMainWindow):
         if not self.full_plan or wp_index < 0 or wp_index >= len(self.full_plan):
             return None
 
+        # get the speed and apply a safe max to it
         speed = max(self.current_speed_val, 0.05)
-        if speed < 0.01:
+        if speed < 0.01: # if we aren't really moving, don't calculate speed
             return None
 
         if len(self.full_plan) < 2:
